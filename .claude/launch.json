@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sentiment-dashboard",
+      "runtimeExecutable": "/Users/samar/Desktop/financial-news-sentiment/.venv/bin/python3.11",
+      "runtimeArgs": ["-c", "import sys,os; sys.path.insert(0,'/Users/samar/Desktop/financial-news-sentiment'); os.chdir('/Users/samar/Desktop/financial-news-sentiment'); from src.dashboard.app import app; app.run(port=5001,threaded=True)"],
+      "port": 5001
+    }
+  ]
+}

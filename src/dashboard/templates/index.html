@@ -1,0 +1,1692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SentimentIQ · Financial Intelligence</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg:        #070b0f;
+  --bg2:       #0c1117;
+  --surface:   #111820;
+  --surface2:  #162030;
+  --surface3:  #1a2535;
+  --border:    #1e2d3d;
+  --border2:   #243447;
+  --text:      #e2eaf3;
+  --text2:     #a8b8cc;
+  --muted:     #5a7a96;
+
+  --pos:       #00d47e;
+  --pos2:      #00ff9d;
+  --neg:       #ff4560;
+  --neg2:      #ff6b84;
+  --neu:       #f5a623;
+  --neu2:      #ffbd4f;
+  --blue:      #2979ff;
+  --blue2:     #5b9bd5;
+  --purple:    #9b59b6;
+  --orange:    #ed7d31;
+
+  --pos-bg:    rgba(0,212,126,0.06);
+  --neg-bg:    rgba(255,69,96,0.07);
+  --neu-bg:    rgba(245,166,35,0.04);
+
+  --font:      'Inter', system-ui, sans-serif;
+  --mono:      'JetBrains Mono', 'Courier New', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   TOP NAV
+══════════════════════════════════════════════════════════════════════════════ */
+.topnav {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(7,11,15,0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 0;
+  padding: 0 24px; height: 52px;
+}
+
+.nav-logo {
+  display: flex; align-items: center; gap: 10px;
+  margin-right: 32px; flex-shrink: 0;
+}
+.logo-mark {
+  width: 28px; height: 28px;
+  background: linear-gradient(135deg, var(--blue) 0%, var(--pos) 100%);
+  border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem; font-weight: 700; color: #fff;
+}
+.logo-text {
+  font-size: 0.95rem; font-weight: 700; letter-spacing: -0.02em;
+  color: var(--text);
+}
+.logo-text span { color: var(--pos); }
+
+.nav-tabs {
+  display: flex; align-items: center; gap: 0; flex: 1;
+}
+.nav-tab {
+  padding: 0 16px; height: 52px; display: flex; align-items: center;
+  font-size: 0.78rem; font-weight: 500; color: var(--muted);
+  border-bottom: 2px solid transparent; cursor: pointer;
+  transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+  background: none; border-top: none; border-left: none; border-right: none;
+  letter-spacing: 0.01em;
+}
+.nav-tab:hover { color: var(--text2); }
+.nav-tab.active { color: var(--text); border-bottom-color: var(--blue); }
+.nav-tab .tab-count {
+  margin-left: 6px; background: var(--surface3); border: 1px solid var(--border2);
+  border-radius: 10px; padding: 1px 6px; font-size: 0.65rem;
+  font-family: var(--mono); color: var(--text2);
+}
+
+.nav-right {
+  display: flex; align-items: center; gap: 16px; margin-left: auto;
+}
+.live-badge {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(0,212,126,0.08); border: 1px solid rgba(0,212,126,0.2);
+  border-radius: 20px; padding: 4px 10px;
+  font-size: 0.7rem; font-weight: 600; color: var(--pos);
+  letter-spacing: 0.04em;
+}
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--pos); animation: glow 2s ease-in-out infinite;
+}
+@keyframes glow {
+  0%,100% { box-shadow: 0 0 4px var(--pos); opacity: 1; }
+  50%      { box-shadow: 0 0 10px var(--pos); opacity: 0.5; }
+}
+.nav-clock {
+  font-family: var(--mono); font-size: 0.75rem; color: var(--text2);
+}
+.nav-countdown {
+  font-family: var(--mono); font-size: 0.68rem; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 8px;
+}
+
+/* ── Refresh progress line ──────────────────────────────────────────────────── */
+#progress-bar {
+  height: 2px;
+  background: linear-gradient(90deg, var(--blue), var(--pos));
+  width: 100%; transition: width 1s linear;
+  box-shadow: 0 0 8px rgba(41,121,255,0.5);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   MARKET SENTIMENT TICKER STRIP
+══════════════════════════════════════════════════════════════════════════════ */
+.sentiment-strip {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: stretch; overflow: hidden;
+}
+.strip-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 20px; border-right: 1px solid var(--border);
+  flex-shrink: 0; min-width: 140px;
+}
+.strip-item:last-child { border-right: none; }
+.strip-label {
+  font-size: 0.65rem; color: var(--muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.07em; white-space: nowrap;
+}
+.strip-value {
+  font-family: var(--mono); font-size: 1rem; font-weight: 600;
+  line-height: 1;
+}
+.strip-delta {
+  font-size: 0.7rem; font-weight: 500; font-family: var(--mono);
+}
+.strip-bar {
+  height: 3px; border-radius: 2px; min-width: 60px;
+  background: var(--border); position: relative; overflow: hidden;
+}
+.strip-bar-fill {
+  position: absolute; left: 0; top: 0; height: 100%; border-radius: 2px;
+  transition: width 1s ease;
+}
+.strip-info { display: flex; flex-direction: column; gap: 3px; }
+.strip-sources {
+  font-size: 0.65rem; color: var(--muted); font-family: var(--mono);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   PIPELINE STRIP
+══════════════════════════════════════════════════════════════════════════════ */
+.pipeline-wrap {
+  padding: 10px 24px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.pipeline-label {
+  font-size: 0.6rem; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 7px;
+}
+.pipeline-strip {
+  display: flex; align-items: center; gap: 0;
+  overflow-x: auto; scrollbar-width: none;
+}
+.pipeline-strip::-webkit-scrollbar { display: none; }
+.pipe-stage { display: flex; align-items: center; flex-shrink: 0; }
+.pipe-node {
+  padding: 4px 11px; font-size: 0.65rem; font-weight: 700;
+  letter-spacing: 0.05em; border-radius: 3px;
+  white-space: nowrap; cursor: default;
+}
+.pipe-arrow {
+  width: 14px; height: 0; border-top: 1px dashed var(--border2);
+  flex-shrink: 0; margin: 0 1px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   MAIN LAYOUT — sidebar + content
+══════════════════════════════════════════════════════════════════════════════ */
+.main-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: calc(100vh - 120px);
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────────── */
+.sidebar {
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 0;
+  overflow-y: auto;
+}
+.sidebar-section {
+  border-bottom: 1px solid var(--border);
+  padding: 14px 16px;
+}
+.sidebar-title {
+  font-size: 0.62rem; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 6px;
+}
+.sidebar-title::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* Stats blocks */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat-block {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.stat-block .num {
+  font-family: var(--mono); font-size: 1.5rem; font-weight: 600;
+  line-height: 1; margin-bottom: 3px;
+}
+.stat-block .lbl {
+  font-size: 0.62rem; color: var(--muted); font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+.stat-block.full { grid-column: 1 / -1; }
+.stat-block.bull .num { color: var(--pos); }
+.stat-block.bear .num { color: var(--neg); }
+.stat-block.neu  .num { color: var(--neu); }
+.stat-block.blue .num { color: var(--blue2); }
+.stat-block.tick .num { color: #a78bfa; }
+
+/* Bull/Bear ratio bar */
+.ratio-wrap { margin-top: 6px; }
+.ratio-bar {
+  height: 5px; border-radius: 3px; background: var(--border);
+  display: flex; overflow: hidden; gap: 1px;
+}
+.ratio-bull { background: var(--pos); border-radius: 3px 0 0 3px; transition: flex 1s; }
+.ratio-bear { background: var(--neg); border-radius: 0 3px 3px 0; transition: flex 1s; }
+.ratio-labels {
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 0.62rem; margin-top: 3px;
+}
+
+/* Narrative */
+.narrative-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--blue);
+  border-radius: 8px; padding: 12px;
+}
+.narrative-header {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+}
+.narrative-icon { font-size: 0.9rem; }
+.narrative-tag {
+  font-size: 0.6rem; font-weight: 700; color: var(--blue2);
+  letter-spacing: 0.07em; text-transform: uppercase;
+}
+.narrative-model {
+  margin-left: auto; font-size: 0.58rem; color: var(--muted);
+  background: var(--surface3); border: 1px solid var(--border2);
+  border-radius: 3px; padding: 1px 5px; font-family: var(--mono);
+}
+.narrative-body {
+  font-size: 0.78rem; color: var(--text2); line-height: 1.55;
+}
+
+/* Source list */
+.source-list { display: flex; flex-direction: column; gap: 5px; }
+.source-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.source-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.source-name { font-size: 0.75rem; color: var(--text2); flex: 1; }
+.source-tier {
+  font-size: 0.6rem; font-weight: 700; padding: 1px 5px;
+  border-radius: 3px; letter-spacing: 0.04em;
+}
+.t1 { background: rgba(91,155,213,0.15); color: var(--blue2); }
+.t2 { background: rgba(112,173,71,0.15); color: #70AD47; }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   CONTENT AREA
+══════════════════════════════════════════════════════════════════════════════ */
+.content-area {
+  display: flex; flex-direction: column; min-width: 0;
+}
+
+/* ── Tab panels ─────────────────────────────────────────────────────────────── */
+.tab-panel { display: none; flex-direction: column; height: 100%; }
+.tab-panel.active { display: flex; }
+
+/* ── Table toolbar ──────────────────────────────────────────────────────────── */
+.table-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  background: var(--bg2); flex-shrink: 0;
+}
+.toolbar-title {
+  font-size: 0.75rem; font-weight: 600; color: var(--text);
+  margin-right: 4px;
+}
+.toolbar-count {
+  font-family: var(--mono); font-size: 0.68rem; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 1px 8px;
+}
+.toolbar-spacer { flex: 1; }
+.filter-btns { display: flex; gap: 4px; }
+.filter-btn {
+  padding: 4px 10px; border-radius: 5px; font-size: 0.68rem; font-weight: 600;
+  border: 1px solid var(--border); background: none; color: var(--muted);
+  cursor: pointer; transition: all 0.15s; letter-spacing: 0.03em;
+}
+.filter-btn:hover { color: var(--text2); border-color: var(--border2); }
+.filter-btn.active { background: var(--surface3); color: var(--text); border-color: var(--border2); }
+.filter-btn.f-bull.active { background: rgba(0,212,126,0.1); color: var(--pos); border-color: rgba(0,212,126,0.3); }
+.filter-btn.f-bear.active { background: rgba(255,69,96,0.1); color: var(--neg); border-color: rgba(255,69,96,0.3); }
+.filter-btn.f-neu.active  { background: rgba(245,166,35,0.1); color: var(--neu); border-color: rgba(245,166,35,0.3); }
+
+.search-box {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 10px;
+}
+.search-box input {
+  background: none; border: none; outline: none;
+  color: var(--text); font-family: var(--font); font-size: 0.75rem;
+  width: 140px;
+}
+.search-box input::placeholder { color: var(--muted); }
+.search-icon { color: var(--muted); font-size: 0.8rem; }
+
+/* ── Table ──────────────────────────────────────────────────────────────────── */
+.table-scroll { overflow: auto; flex: 1; }
+
+table {
+  width: 100%; border-collapse: collapse; font-size: 0.78rem;
+}
+thead {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--surface);
+}
+thead th {
+  padding: 9px 12px; text-align: left;
+  font-size: 0.65rem; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.07em;
+  border-bottom: 1px solid var(--border2);
+  white-space: nowrap; cursor: pointer; user-select: none;
+  transition: color 0.15s;
+}
+thead th:hover { color: var(--text2); }
+thead th.sorted-asc::after  { content: ' ▲'; color: var(--blue2); }
+thead th.sorted-desc::after { content: ' ▼'; color: var(--blue2); }
+
+tbody tr {
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid rgba(30,45,61,0.6);
+}
+tbody tr:hover { background: rgba(41,121,255,0.04); }
+tbody tr:hover td:first-child { border-left: 2px solid var(--blue); }
+tbody td { padding: 8px 12px; vertical-align: middle; }
+tbody td:first-child { border-left: 2px solid transparent; transition: border-color 0.1s; }
+
+tr.pos-row { background: var(--pos-bg); }
+tr.neg-row { background: var(--neg-bg); }
+tr.neu-row { background: var(--neu-bg); }
+tr.pos-row:hover { background: rgba(0,212,126,0.1); }
+tr.neg-row:hover { background: rgba(255,69,96,0.12); }
+
+.rank-num {
+  font-family: var(--mono); font-size: 0.7rem; color: var(--muted);
+  font-weight: 500; width: 24px;
+}
+.rank-num.top3 { color: var(--neu2); font-weight: 700; }
+
+.headline-cell {
+  max-width: 420px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  font-size: 0.78rem; color: var(--text);
+}
+.headline-cell:hover { color: var(--blue2); }
+
+/* Sentiment pill */
+.sentiment-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 12px;
+  font-size: 0.65rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; white-space: nowrap;
+}
+.pill-pos { background: rgba(0,212,126,0.12); color: var(--pos); border: 1px solid rgba(0,212,126,0.2); }
+.pill-neg { background: rgba(255,69,96,0.12);  color: var(--neg); border: 1px solid rgba(255,69,96,0.2); }
+.pill-neu { background: rgba(245,166,35,0.1);  color: var(--neu); border: 1px solid rgba(245,166,35,0.2); }
+.pill-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+/* Score gauge */
+.score-gauge {
+  display: flex; align-items: center; gap: 7px; min-width: 110px;
+}
+.gauge-track {
+  flex: 1; height: 4px; border-radius: 2px;
+  background: var(--border); position: relative; overflow: visible;
+}
+.gauge-center {
+  position: absolute; left: 50%; top: -2px; width: 1px; height: 8px;
+  background: var(--border2); z-index: 1;
+}
+.gauge-fill {
+  position: absolute; height: 100%; border-radius: 2px; top: 0;
+  transition: width 0.4s ease;
+}
+.score-num {
+  font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+  min-width: 44px; text-align: right;
+}
+
+/* Rank score bar */
+.rank-bar-cell { display: flex; align-items: center; gap: 6px; }
+.rank-bar {
+  height: 4px; border-radius: 2px; min-width: 2px;
+  background: linear-gradient(90deg, var(--blue) 0%, var(--pos) 100%);
+  box-shadow: 0 0 6px rgba(0,212,126,0.3);
+  transition: width 0.4s ease;
+}
+.rank-val { font-family: var(--mono); font-size: 0.7rem; color: var(--text2); }
+
+/* Source chip */
+.src-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 7px; border-radius: 4px;
+  font-size: 0.65rem; background: var(--surface3); color: var(--text2);
+  border: 1px solid var(--border2); max-width: 110px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: middle;
+}
+.src-chip img {
+  width: 12px; height: 12px; border-radius: 2px;
+  object-fit: contain; flex-shrink: 0;
+}
+
+/* Headline with thumbnail preview */
+.hl-wrap { display: flex; align-items: center; gap: 10px; }
+.hl-thumb {
+  width: 52px; height: 36px; border-radius: 5px;
+  object-fit: cover; flex-shrink: 0;
+  background: var(--surface3); border: 1px solid var(--border);
+}
+.hl-thumb-placeholder {
+  width: 52px; height: 36px; border-radius: 5px; flex-shrink: 0;
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; position: relative;
+}
+.hl-thumb-placeholder img {
+  width: 22px; height: 22px; object-fit: contain;
+  filter: brightness(0) invert(0.6);
+}
+.hl-text { min-width: 0; }
+.hl-title {
+  display: block; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; color: var(--text); font-size: 0.78rem;
+  max-width: 380px;
+}
+.hl-title:hover { color: var(--blue2); }
+.hl-source-line {
+  font-size: 0.62rem; color: var(--muted); margin-top: 2px;
+}
+
+/* Modal article image */
+.modal-img-wrap {
+  width: 100%; height: 180px; border-radius: 10px; overflow: hidden;
+  background: var(--bg); border: 1px solid var(--border);
+  margin-bottom: 16px; position: relative;
+}
+.modal-img-wrap img {
+  width: 100%; height: 100%; object-fit: cover;
+  display: block;
+}
+.modal-img-placeholder {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+  background: linear-gradient(135deg, var(--surface2) 0%, var(--surface3) 100%);
+}
+.modal-img-placeholder img.logo {
+  width: 56px; height: 56px; object-fit: contain;
+  border-radius: 12px;
+}
+.modal-img-loading {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.72rem; color: var(--muted);
+}
+.spinner {
+  width: 14px; height: 14px; border: 2px solid var(--border2);
+  border-top-color: var(--blue); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.modal-img-src-label {
+  font-size: 0.68rem; color: var(--muted); letter-spacing: 0.04em;
+}
+
+/* Tier badge */
+.tier-badge {
+  display: inline-block; padding: 2px 5px; border-radius: 3px;
+  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.04em;
+}
+
+/* Method chip */
+.method-chip {
+  font-size: 0.62rem; padding: 2px 6px; border-radius: 4px; font-weight: 600;
+  font-family: var(--mono);
+}
+.m-finbert { background: rgba(155,89,182,0.15); color: #b97de8; border: 1px solid rgba(155,89,182,0.25); }
+.m-vader   { background: rgba(245,166,35,0.12);  color: var(--neu2); border: 1px solid rgba(245,166,35,0.2); }
+
+/* Time */
+.time-cell {
+  font-family: var(--mono); font-size: 0.68rem; color: var(--muted);
+}
+
+/* ── Ticker table ───────────────────────────────────────────────────────────── */
+.ticker-sym-cell {
+  display: flex; align-items: center; gap: 8px;
+}
+.ticker-sym {
+  font-family: var(--mono); font-weight: 700; font-size: 0.85rem;
+  padding: 3px 9px; border-radius: 5px; letter-spacing: 0.04em;
+  display: inline-block;
+}
+.tsym-pos { color: var(--pos); background: rgba(0,212,126,0.1); border: 1px solid rgba(0,212,126,0.25); }
+.tsym-neg { color: var(--neg); background: rgba(255,69,96,0.1);  border: 1px solid rgba(255,69,96,0.25); }
+.tsym-neu { color: var(--neu); background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.2); }
+
+.breakdown-bar {
+  display: flex; border-radius: 3px; overflow: hidden;
+  height: 6px; min-width: 70px; gap: 1px;
+}
+.bb-bull { background: var(--pos); }
+.bb-bear { background: var(--neg); }
+.bb-neu  { background: var(--neu); }
+.breakdown-counts {
+  font-family: var(--mono); font-size: 0.62rem; color: var(--muted);
+  margin-top: 2px; display: flex; gap: 3px;
+}
+.bc-bull { color: var(--pos); }
+.bc-bear { color: var(--neg); }
+.bc-neu  { color: var(--neu); }
+
+.trust-val {
+  font-family: var(--mono); font-size: 0.72rem;
+}
+
+/* empty state */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 80px 20px; gap: 12px; color: var(--muted);
+}
+.empty-state .icon { font-size: 2.5rem; opacity: 0.4; }
+.empty-state .msg  { font-size: 0.85rem; }
+.empty-state .sub  { font-size: 0.72rem; opacity: 0.7; }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   MODALS
+══════════════════════════════════════════════════════════════════════════════ */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.72);
+  backdrop-filter: blur(4px);
+  z-index: 300;
+  align-items: center; justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  width: min(620px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.04);
+}
+.modal-header {
+  padding: 20px 24px 0;
+  position: sticky; top: 0; background: var(--surface);
+  border-radius: 14px 14px 0 0;
+  z-index: 1;
+}
+.modal-close {
+  position: absolute; top: 14px; right: 16px;
+  background: var(--surface3); border: 1px solid var(--border2);
+  color: var(--text2); border-radius: 6px;
+  width: 26px; height: 26px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.9rem; transition: all 0.15s;
+}
+.modal-close:hover { background: var(--border2); color: var(--text); }
+.modal-body { padding: 16px 24px 24px; }
+
+.modal-title { font-size: 0.95rem; font-weight: 600; line-height: 1.45; padding-right: 36px; margin-bottom: 10px; }
+.modal-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+
+.modal-meter-wrap { margin-bottom: 16px; }
+.modal-meter-labels {
+  display: flex; justify-content: space-between;
+  font-size: 0.65rem; margin-bottom: 5px;
+}
+.modal-meter-track {
+  height: 8px; border-radius: 4px; background: var(--border);
+  position: relative; overflow: hidden;
+}
+.modal-meter-fill { position: absolute; top: 0; height: 100%; border-radius: 4px; transition: width 0.4s; }
+.modal-meter-center { position: absolute; left: 50%; top: 0; width: 1px; height: 100%; background: var(--muted); opacity: 0.4; }
+
+.modal-stats {
+  display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 16px;
+}
+.modal-stat {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px; text-align: center;
+}
+.modal-stat .big { font-family: var(--mono); font-size: 1.3rem; font-weight: 600; margin-bottom: 3px; }
+.modal-stat .sm  { font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+.modal-weights {
+  display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 16px;
+}
+
+.modal-link-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface3); border: 1px solid var(--border2);
+  border-radius: 8px; padding: 8px 16px;
+  color: var(--blue2); font-size: 0.78rem; font-weight: 500;
+  text-decoration: none; transition: all 0.15s;
+}
+.modal-link-btn:hover {
+  background: var(--border2); color: var(--text); border-color: var(--blue);
+}
+
+/* Ticker modal breakdown */
+.ticker-bdown {
+  display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 16px;
+}
+.tbd-card {
+  border-radius: 8px; padding: 12px; text-align: center;
+  background: var(--bg); border: 1px solid var(--border);
+}
+.tbd-card .big { font-family: var(--mono); font-size: 1.3rem; font-weight: 600; }
+.tbd-card .sm  { font-size: 0.62rem; color: var(--muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.06em; }
+.tbd-bull .big { color: var(--pos); }
+.tbd-bear .big { color: var(--neg); }
+.tbd-neu  .big { color: var(--neu); }
+
+/* ── Tooltip ─────────────────────────────────────────────────────────────────── */
+[data-tip] { position: relative; cursor: default; }
+[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + 6px); left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface3); border: 1px solid var(--border2);
+  color: var(--text2); font-size: 0.68rem; padding: 4px 8px;
+  border-radius: 5px; white-space: nowrap; z-index: 400;
+  pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<!-- ══ TOP NAV ═══════════════════════════════════════════════════════════════ -->
+<nav class="topnav">
+  <div class="nav-logo">
+    <div class="logo-mark">S</div>
+    <div class="logo-text">Sentiment<span>IQ</span></div>
+  </div>
+
+  <div class="nav-tabs">
+    <button class="nav-tab active" onclick="switchTab('articles',this)">
+      Top Articles
+      <span class="tab-count" id="tab-count-articles">{{ rows|length }}</span>
+    </button>
+    <button class="nav-tab" onclick="switchTab('tickers',this)">
+      Ticker Heatmap
+      <span class="tab-count" id="tab-count-tickers">{{ tickers|length }}</span>
+    </button>
+  </div>
+
+  <div class="nav-right">
+    <span class="nav-clock" id="nav-clock">--:--:--</span>
+    <span class="nav-countdown" id="countdown-badge">↻ {{ refresh }}s</span>
+    <div class="live-badge">
+      <div class="live-dot"></div>
+      <span id="live-label">LIVE</span>
+    </div>
+  </div>
+</nav>
+<div id="progress-bar" style="width:100%"></div>
+
+<!-- ══ MARKET SENTIMENT STRIP ════════════════════════════════════════════════ -->
+<div class="sentiment-strip">
+  <div class="strip-item">
+    <div class="strip-info">
+      <div class="strip-label">Market Mood</div>
+      <div class="strip-value" id="strip-mood" style="color:var(--pos)">—</div>
+    </div>
+  </div>
+  <div class="strip-item">
+    <div class="strip-info">
+      <div class="strip-label">Bull / Bear Ratio</div>
+      <div style="margin-top:4px">
+        <div class="ratio-bar">
+          <div class="ratio-bull" id="ratio-bull" style="flex:1"></div>
+          <div class="ratio-bear" id="ratio-bear" style="flex:1"></div>
+        </div>
+        <div class="ratio-labels">
+          <span style="color:var(--pos)" id="ratio-bull-pct">—%</span>
+          <span style="color:var(--neg)" id="ratio-bear-pct">—%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="strip-item">
+    <div class="strip-info">
+      <div class="strip-label">Articles Scored</div>
+      <div class="strip-value" style="color:var(--text)" id="strip-total">{{ stats.total }}</div>
+    </div>
+  </div>
+  <div class="strip-item">
+    <div class="strip-info">
+      <div class="strip-label">Sources Active</div>
+      <div class="strip-value" style="color:var(--blue2)" id="strip-sources">{{ stats.sources }}</div>
+    </div>
+  </div>
+  <div class="strip-item">
+    <div class="strip-info">
+      <div class="strip-label">Tickers Tracked</div>
+      <div class="strip-value" style="color:#a78bfa" id="strip-tickers">{{ tickers|length }}</div>
+    </div>
+  </div>
+  <div class="strip-item" style="flex:1; border-right:none">
+    <div class="strip-info" style="width:100%">
+      <div class="strip-label">Refresh Cycle</div>
+      <div style="margin-top:4px">
+        <div class="strip-bar" style="min-width:100%">
+          <div class="strip-bar-fill" id="strip-progress"
+               style="background:linear-gradient(90deg,var(--blue),var(--pos));width:100%"></div>
+        </div>
+        <div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted);margin-top:2px">
+          Next update: <span id="strip-countdown">{{ refresh }}s</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ PIPELINE STRIP ════════════════════════════════════════════════════════ -->
+<div class="pipeline-wrap">
+  <div class="pipeline-label">Data Pipeline</div>
+  <div class="pipeline-strip">
+    {% set pipes = [
+      ("RSS Feeds",  "#5B9BD5", "#fff"),
+      ("Scrapers",   "#70AD47", "#fff"),
+      ("Broker API", "#ED7D31", "#fff"),
+      ("Queue",      "#546E7A", "#fff"),
+      ("FinBERT",    "#9B59B6", "#fff"),
+      ("VADER FB",   "#b8860b", "#fff"),
+      ("CrewAI",     "#2979ff", "#fff"),
+      ("Rank Score", "#00a86b", "#fff"),
+      ("Ticker Agg", "#7c3aed", "#fff"),
+      ("Dashboard",  "#00d47e", "#000"),
+    ] %}
+    {% for label, bg, fg in pipes %}
+    <div class="pipe-stage">
+      <div class="pipe-node" style="background:{{ bg }};color:{{ fg }}">{{ label }}</div>
+      {% if not loop.last %}
+      <div class="pipe-arrow"></div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ══ MAIN LAYOUT ════════════════════════════════════════════════════════════ -->
+<div class="main-layout">
+
+  <!-- ── SIDEBAR ────────────────────────────────────────────────────────────── -->
+  <aside class="sidebar">
+
+    <!-- Stats -->
+    <div class="sidebar-section">
+      <div class="sidebar-title">Market Overview</div>
+      <div class="stat-grid">
+        <div class="stat-block full">
+          <div class="num" id="sb-total">{{ stats.total }}</div>
+          <div class="lbl">Total Articles Scored</div>
+        </div>
+        <div class="stat-block bull">
+          <div class="num" id="sb-bull">{{ stats.bullish }}</div>
+          <div class="lbl">Bullish</div>
+        </div>
+        <div class="stat-block bear">
+          <div class="num" id="sb-bear">{{ stats.bearish }}</div>
+          <div class="lbl">Bearish</div>
+        </div>
+        <div class="stat-block neu">
+          <div class="num" id="sb-neu">{{ stats.neutral }}</div>
+          <div class="lbl">Neutral</div>
+        </div>
+        <div class="stat-block tick">
+          <div class="num" id="sb-tick">{{ tickers|length }}</div>
+          <div class="lbl">Tickers</div>
+        </div>
+      </div>
+      <!-- Ratio bar -->
+      {% if stats.total > 0 %}
+      <div class="ratio-wrap" style="margin-top:12px">
+        <div class="ratio-bar" style="height:8px">
+          <div class="ratio-bull" id="sb-ratio-bull"
+               style="flex:{{ stats.bullish }}"></div>
+          <div class="ratio-bear" id="sb-ratio-bear"
+               style="flex:{{ stats.bearish }}"></div>
+        </div>
+        <div class="ratio-labels" style="margin-top:4px">
+          <span style="color:var(--pos)">▲ {{ "%.0f"|format(stats.bullish/stats.total*100) }}% Bull</span>
+          <span style="color:var(--neg)">{{ "%.0f"|format(stats.bearish/stats.total*100) }}% Bear ▼</span>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Groq Narrative -->
+    <div class="sidebar-section">
+      <div class="sidebar-title">AI Narrative</div>
+      <div class="narrative-card">
+        <div class="narrative-header">
+          <span class="narrative-icon">🤖</span>
+          <span class="narrative-tag">Groq · LLaMA 3.1</span>
+          <span class="narrative-model">8B-Instant</span>
+        </div>
+        <div class="narrative-body" id="narrative-text">{{ narrative }}</div>
+      </div>
+    </div>
+
+    <!-- Active sources -->
+    <div class="sidebar-section">
+      <div class="sidebar-title">Active Sources</div>
+      <div class="source-list">
+        {% set source_map = {
+          "reuters":        ("Reuters",       "T1"),
+          "dow_jones":      ("Dow Jones/WSJ", "T1"),
+          "cnbc":           ("CNBC",          "T2"),
+          "marketwatch":    ("MarketWatch",   "T2"),
+          "pr_newswire":    ("PR Newswire",   "T2"),
+          "access_wires":   ("ACCESS Wires",  "T2"),
+          "finance_wire":   ("FinanceWire",   "T2"),
+          "global_newswire":("GlobeNewswire", "T2"),
+          "yahoo_finance":  ("Yahoo Finance", "T2"),
+          "seeking_alpha":  ("Seeking Alpha", "T2"),
+          "fda":            ("FDA",           "T1"),
+          "sec_edgar":      ("SEC EDGAR",     "T1"),
+          "finnhub_general":("Finnhub",       "T2"),
+          "finnhub_merger": ("Finnhub M&A",   "T2"),
+          "newsapi":        ("NewsAPI",       "T2"),
+          "tradingview":    ("TradingView",   "T2"),
+          "finviz":         ("FinViz",        "T2"),
+        } %}
+        {% set colors = ["#5B9BD5","#70AD47","#ED7D31","#9B59B6","#2979ff","#00d47e","#f5a623","#ff4560","#a78bfa","#60a5fa"] %}
+        {% for src, (name, tier) in source_map.items() %}
+        <div class="source-row">
+          <div class="source-dot" style="background:{{ colors[loop.index0 % colors|length] }}"></div>
+          <span class="source-name">{{ name }}</span>
+          <span class="source-tier {{ 't1' if tier=='T1' else 't2' }}">{{ tier }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ── CONTENT AREA ──────────────────────────────────────────────────────── -->
+  <div class="content-area">
+
+    <!-- ══ TAB: ARTICLES ════════════════════════════════════════════════════ -->
+    <div id="tab-articles" class="tab-panel active">
+      <div class="table-toolbar">
+        <span class="toolbar-title">Top Ranked Articles</span>
+        <span class="toolbar-count" id="art-count">{{ rows|length }} articles</span>
+        <div class="toolbar-spacer"></div>
+        <div class="filter-btns">
+          <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+          <button class="filter-btn f-bull" onclick="setFilter('positive',this)">▲ Bull</button>
+          <button class="filter-btn f-bear" onclick="setFilter('negative',this)">▼ Bear</button>
+          <button class="filter-btn f-neu"  onclick="setFilter('neutral',this)">● Neutral</button>
+        </div>
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="art-search" placeholder="Search headlines…"
+                 oninput="searchArticles(this.value)">
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table id="news-table">
+          <thead>
+            <tr>
+              <th style="width:36px" data-col="rank" data-tbl="articles">#</th>
+              <th data-col="source_label" data-tbl="articles">Source</th>
+              <th data-col="tier" data-tbl="articles">Tier</th>
+              <th style="width:99%">Headline</th>
+              <th data-col="label" data-tbl="articles">Signal</th>
+              <th data-col="sentiment_score" data-tbl="articles">Score</th>
+              <th data-col="message_density" data-tbl="articles">Density</th>
+              <th data-col="rank_score" data-tbl="articles">Rank ▾</th>
+              <th data-col="method" data-tbl="articles">Model</th>
+              <th data-col="scored_at" data-tbl="articles">Time</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-articles">
+            {% for r in rows %}
+            <tr class="{{ r.label }}-row" data-artidx="{{ loop.index0 }}" style="cursor:pointer">
+              <td><span class="rank-num {% if r.rank <= 3 %}top3{% endif %}">{{ r.rank }}</span></td>
+              <td>
+                <span class="src-chip" title="{{ r.source_label }}">
+                  {% if r.source_favicon %}<img src="{{ r.source_favicon }}" alt="" onerror="this.style.display='none'">{% endif %}
+                  {{ r.source_label }}
+                </span>
+              </td>
+              <td>
+                <span class="tier-badge {{ 't1' if r.tier==1 else 't2' }}"
+                      data-tip="{{ 'Tier 1 — Institutional (1.0×)' if r.tier==1 else 'Tier 2 — Aggregated (0.75×)' }}">
+                  T{{ r.tier }}
+                </span>
+              </td>
+              <td>
+                <div class="hl-wrap">
+                  {% if r.image_url %}
+                  <img class="hl-thumb" src="{{ r.image_url }}" alt=""
+                       onerror="this.outerHTML='<div class=\'hl-thumb-placeholder\'>📰</div>'">
+                  {% else %}
+                  <div class="hl-thumb-placeholder">
+                    {% if r.source_favicon %}<img src="{{ r.source_favicon }}" style="width:20px;height:20px;opacity:.5" alt="">{% else %}📰{% endif %}
+                  </div>
+                  {% endif %}
+                  <div class="hl-text">
+                    <span class="hl-title" title="{{ r.title }}">{{ r.title[:95] }}{% if r.title|length > 95 %}…{% endif %}</span>
+                    <div class="hl-source-line">{{ r.published }}</div>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <span class="sentiment-pill {% if r.label=='positive' %}pill-pos{% elif r.label=='negative' %}pill-neg{% else %}pill-neu{% endif %}">
+                  <span class="pill-dot"></span>{{ r.label }}
+                </span>
+              </td>
+              <td>
+                <div class="score-gauge">
+                  <div class="gauge-track">
+                    <div class="gauge-center"></div>
+                    {% if r.sentiment_score >= 0 %}
+                    <div class="gauge-fill" style="left:50%;width:{{ (r.sentiment_score*50)|int }}%;background:var(--pos)"></div>
+                    {% else %}
+                    <div class="gauge-fill" style="right:50%;width:{{ (r.sentiment_score*-50)|int }}%;background:var(--neg)"></div>
+                    {% endif %}
+                  </div>
+                  <span class="score-num" style="color:{% if r.sentiment_score>0.05 %}var(--pos){% elif r.sentiment_score<-0.05 %}var(--neg){% else %}var(--neu){% endif %}">
+                    {{ r.sentiment_score }}
+                  </span>
+                </div>
+              </td>
+              <td style="text-align:center;font-family:var(--mono);font-size:.72rem">{{ r.message_density }}</td>
+              <td>
+                <div class="rank-bar-cell">
+                  <div class="rank-bar" style="width:{{ [r.rank_score*2,56]|min|int }}px"></div>
+                  <span class="rank-val">{{ r.rank_score }}</span>
+                </div>
+              </td>
+              <td><span class="method-chip {{ 'm-finbert' if r.method=='FinBERT' else 'm-vader' }}">{{ r.method }}</span></td>
+              <td class="time-cell">{{ r.scored_at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ══ TAB: TICKERS ══════════════════════════════════════════════════════ -->
+    <div id="tab-tickers" class="tab-panel">
+      <div class="table-toolbar">
+        <span class="toolbar-title">Ticker Sentiment Heatmap</span>
+        <span class="toolbar-count" id="tick-count">{{ tickers|length }} tickers</span>
+        <div class="toolbar-spacer"></div>
+        <div class="filter-btns">
+          <button class="filter-btn active" onclick="setTickerFilter('all',this)">All</button>
+          <button class="filter-btn f-bull" onclick="setTickerFilter('positive',this)">▲ Bullish</button>
+          <button class="filter-btn f-bear" onclick="setTickerFilter('negative',this)">▼ Bearish</button>
+        </div>
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="tick-search" placeholder="Search ticker…"
+                 oninput="searchTickers(this.value)">
+        </div>
+      </div>
+      <div class="table-scroll">
+        {% if tickers %}
+        <table id="ticker-table">
+          <thead>
+            <tr>
+              <th style="width:36px" data-col="rank" data-tbl="tickers">#</th>
+              <th data-col="ticker" data-tbl="tickers">Ticker</th>
+              <th data-col="composite_score" data-tbl="tickers">Composite Score</th>
+              <th data-col="article_count" data-tbl="tickers">Articles</th>
+              <th>Bull / Bear / Neu</th>
+              <th data-col="avg_trust" data-tbl="tickers">Trust</th>
+              <th style="width:99%">Top Headline</th>
+              <th data-col="top_source" data-tbl="tickers">Source</th>
+              <th data-col="last_updated" data-tbl="tickers">Updated</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-tickers">
+            {% for t in tickers %}
+            <tr class="{{ t.label }}-row" data-tickidx="{{ loop.index0 }}" style="cursor:pointer">
+              <td><span class="rank-num {% if t.rank <= 3 %}top3{% endif %}">{{ t.rank }}</span></td>
+              <td>
+                <div class="ticker-sym-cell">
+                  <span class="ticker-sym {{ 'tsym-pos' if t.label=='positive' else ('tsym-neg' if t.label=='negative' else 'tsym-neu') }}">
+                    {{ t.ticker }}
+                  </span>
+                </div>
+              </td>
+              <td>
+                <div class="score-gauge">
+                  <div class="gauge-track">
+                    <div class="gauge-center"></div>
+                    {% if t.composite_score >= 0 %}
+                    <div class="gauge-fill" style="left:50%;width:{{ (t.composite_score*50)|int }}%;background:var(--pos)"></div>
+                    {% else %}
+                    <div class="gauge-fill" style="right:50%;width:{{ (t.composite_score*-50)|int }}%;background:var(--neg)"></div>
+                    {% endif %}
+                  </div>
+                  <span class="score-num" style="color:{% if t.composite_score>0.05 %}var(--pos){% elif t.composite_score<-0.05 %}var(--neg){% else %}var(--neu){% endif %}">
+                    {{ t.composite_score }}
+                  </span>
+                </div>
+              </td>
+              <td style="text-align:center;font-family:var(--mono);font-weight:600">{{ t.article_count }}</td>
+              <td>
+                <div class="breakdown-bar">
+                  <div class="bb-bull" style="flex:{{ t.bullish_count }}"></div>
+                  <div class="bb-bear" style="flex:{{ t.bearish_count }}"></div>
+                  <div class="bb-neu"  style="flex:{{ t.neutral_count }}"></div>
+                </div>
+                <div class="breakdown-counts">
+                  <span class="bc-bull">{{ t.bullish_count }}B</span>
+                  <span style="color:var(--border2)">/</span>
+                  <span class="bc-bear">{{ t.bearish_count }}S</span>
+                  <span style="color:var(--border2)">/</span>
+                  <span class="bc-neu">{{ t.neutral_count }}N</span>
+                </div>
+              </td>
+              <td>
+                <span class="trust-val" style="color:{% if t.avg_trust>=1.0 %}var(--blue2){% else %}#70AD47{% endif %}">
+                  {{ t.avg_trust }}×
+                </span>
+              </td>
+              <td class="headline-cell" title="{{ t.top_headline }}">{{ t.top_headline[:80] }}{% if t.top_headline|length > 80 %}…{% endif %}</td>
+              <td><span class="src-chip">{{ t.top_source }}</span></td>
+              <td class="time-cell">{{ t.last_updated }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+          <div class="icon">📊</div>
+          <div class="msg">No ticker data yet</div>
+          <div class="sub">Ticker aggregation populates after the first pipeline cycle.<br>Headlines must mention a tracked company or $TICKER symbol.</div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div><!-- /content-area -->
+</div><!-- /main-layout -->
+
+<!-- ══ ARTICLE MODAL ══════════════════════════════════════════════════════════ -->
+<div id="art-overlay" class="modal-overlay" onclick="closeArtIfBg(event)">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div class="modal-close" onclick="closeArtModal()">✕</div>
+      <div class="modal-title" id="m-title"></div>
+      <div class="modal-tags" id="m-tags"></div>
+    </div>
+    <div class="modal-body">
+      <!-- Article hero image -->
+      <div class="modal-img-wrap" id="m-img-wrap">
+        <div class="modal-img-placeholder" id="m-img-placeholder">
+          <img id="m-src-logo" src="" alt="">
+          <span class="modal-img-src-label" id="m-src-label-img"></span>
+        </div>
+        <img id="m-article-img" src="" alt="" style="display:none"
+             onerror="this.style.display='none';document.getElementById('m-img-placeholder').style.display='flex'">
+      </div>
+
+      <div class="modal-meter-wrap">
+        <div class="modal-meter-labels">
+          <span style="color:var(--neg)">◀ Bearish −1.0</span>
+          <span id="m-score-lbl" style="font-family:var(--mono);font-weight:600"></span>
+          <span style="color:var(--pos)">Bullish +1.0 ▶</span>
+        </div>
+        <div class="modal-meter-track">
+          <div class="modal-meter-center"></div>
+          <div class="modal-meter-fill" id="m-meter"></div>
+        </div>
+      </div>
+      <div class="modal-stats">
+        <div class="modal-stat">
+          <div class="big" id="m-sentiment"></div>
+          <div class="sm">Sentiment Score</div>
+        </div>
+        <div class="modal-stat">
+          <div class="big" id="m-density"></div>
+          <div class="sm">Message Density</div>
+        </div>
+        <div class="modal-stat">
+          <div class="big" id="m-rank"></div>
+          <div class="sm">Rank Score</div>
+        </div>
+      </div>
+      <div class="modal-weights" id="m-weights" style="display:none">
+        <div class="modal-stat">
+          <div class="big" id="m-trust" style="color:var(--blue2)"></div>
+          <div class="sm">Trust Weight</div>
+        </div>
+        <div class="modal-stat">
+          <div class="big" id="m-time" style="color:var(--neu)"></div>
+          <div class="sm">Time Decay</div>
+        </div>
+        <div class="modal-stat">
+          <div class="big" id="m-tickers" style="font-size:0.7rem;word-break:break-word;color:var(--purple)"></div>
+          <div class="sm">Tickers Found</div>
+        </div>
+      </div>
+      <a id="m-link" href="#" target="_blank" rel="noopener" class="modal-link-btn">
+        Read full article ↗
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TICKER MODAL ═══════════════════════════════════════════════════════════ -->
+<div id="tick-overlay" class="modal-overlay" onclick="closeTickIfBg(event)">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div class="modal-close" onclick="closeTickModal()">✕</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding-right:32px">
+        <span class="ticker-sym" id="tm-sym" style="font-size:1.1rem"></span>
+        <span class="sentiment-pill" id="tm-pill"></span>
+        <span style="font-size:0.7rem;color:var(--muted);margin-left:auto" id="tm-updated"></span>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="modal-meter-wrap">
+        <div class="modal-meter-labels">
+          <span style="color:var(--neg)">◀ Bearish −1.0</span>
+          <span id="tm-score-lbl" style="font-family:var(--mono);font-weight:600"></span>
+          <span style="color:var(--pos)">Bullish +1.0 ▶</span>
+        </div>
+        <div class="modal-meter-track">
+          <div class="modal-meter-center"></div>
+          <div class="modal-meter-fill" id="tm-meter"></div>
+        </div>
+      </div>
+      <div class="ticker-bdown">
+        <div class="tbd-card tbd-bull">
+          <div class="big" id="tm-bull"></div>
+          <div class="sm">Bullish</div>
+        </div>
+        <div class="tbd-card tbd-bear">
+          <div class="big" id="tm-bear"></div>
+          <div class="sm">Bearish</div>
+        </div>
+        <div class="tbd-card tbd-neu">
+          <div class="big" id="tm-neu"></div>
+          <div class="sm">Neutral</div>
+        </div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px">
+        <div style="font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:7px">Top Headline</div>
+        <div id="tm-headline" style="font-size:0.85rem;line-height:1.5;color:var(--text)"></div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+          <span class="src-chip" id="tm-src"></span>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        <div class="modal-stat">
+          <div class="big" id="tm-count" style="color:#a78bfa"></div>
+          <div class="sm">Articles (48h window)</div>
+        </div>
+        <div class="modal-stat">
+          <div class="big" id="tm-trust" style="color:var(--blue2)"></div>
+          <div class="sm">Avg Trust Weight</div>
+        </div>
+      </div>
+      <a id="tm-link" href="#" target="_blank" rel="noopener" class="modal-link-btn">
+        Read top article ↗
+      </a>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════════
+   STATE
+════════════════════════════════════════════════════════════════════════════ */
+const REFRESH    = {{ refresh }};
+let countdown    = REFRESH;
+let articleData  = {{ rows|tojson }};
+let tickerData   = {{ tickers|tojson }};
+let artFilter    = 'all';
+let tickFilter   = 'all';
+let artSortCol   = 'rank';  let artSortAsc  = true;
+let tickSortCol  = 'rank';  let tickSortAsc = true;
+
+// ── Click-safe index arrays (avoids JSON-in-HTML-attribute breakage) ──────────
+let _artRows  = articleData.slice();   // what's currently rendered in the table
+let _tickRows = tickerData.slice();
+
+/* ── Clock ──────────────────────────────────────────────────────────────────── */
+function updateClock() {
+  const n = new Date();
+  document.getElementById('nav-clock').textContent =
+    n.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+}
+updateClock(); setInterval(updateClock, 1000);
+
+/* ── Countdown / progress ───────────────────────────────────────────────────── */
+const progBar = document.getElementById('progress-bar');
+setInterval(() => {
+  countdown = Math.max(0, countdown - 1);
+  const pct = (countdown / REFRESH * 100).toFixed(1);
+  progBar.style.width = pct + '%';
+  document.getElementById('strip-progress').style.width = pct + '%';
+  document.getElementById('strip-countdown').textContent = countdown + 's';
+  document.getElementById('countdown-badge').textContent = '↻ ' + countdown + 's';
+}, 1000);
+
+/* ── SSE ─────────────────────────────────────────────────────────────────────── */
+const es = new EventSource('/stream');
+es.onmessage = e => {
+  const p = JSON.parse(e.data);
+  if (p.error) return;
+  if (p.data)    { articleData = p.data;   applyArticleFilter(); }
+  if (p.tickers) { tickerData  = p.tickers; applyTickerFilter();
+                   const n = p.tickers.length;
+                   document.getElementById('strip-tickers').textContent = n;
+                   document.getElementById('sb-tick').textContent = n;
+                   document.getElementById('tab-count-tickers').textContent = n; }
+  if (p.stats) {
+    const s = p.stats;
+    ['strip-total','sb-total'].forEach(id => document.getElementById(id).textContent = s.total);
+    ['strip-sources'].forEach(id => document.getElementById(id).textContent = s.sources);
+    document.getElementById('sb-bull').textContent = s.bullish;
+    document.getElementById('sb-bear').textContent = s.bearish;
+    document.getElementById('sb-neu').textContent  = s.neutral;
+    updateMoodStrip(s);
+  }
+  if (p.narrative) document.getElementById('narrative-text').textContent = p.narrative;
+  countdown = REFRESH;
+};
+es.onerror = () => { document.getElementById('live-label').textContent = 'Reconnecting'; };
+es.onopen  = () => { document.getElementById('live-label').textContent = 'LIVE'; };
+
+/* ── Mood strip ─────────────────────────────────────────────────────────────── */
+function updateMoodStrip(s) {
+  const total = s.total || 1;
+  const bull  = s.bullish, bear = s.bearish;
+  const bpct  = (bull / total * 100).toFixed(0);
+  const spct  = (bear / total * 100).toFixed(0);
+  document.getElementById('ratio-bull').style.flex = bull;
+  document.getElementById('ratio-bear').style.flex = bear;
+  document.getElementById('ratio-bull-pct').textContent = bpct + '%';
+  document.getElementById('ratio-bear-pct').textContent = spct + '%';
+  document.getElementById('sb-ratio-bull').style.flex = bull;
+  document.getElementById('sb-ratio-bear').style.flex = bear;
+
+  const mood = bull > bear * 1.5 ? '🟢 BULLISH' : bear > bull * 1.5 ? '🔴 BEARISH' : '🟡 MIXED';
+  const moodCol = bull > bear * 1.5 ? 'var(--pos)' : bear > bull * 1.5 ? 'var(--neg)' : 'var(--neu)';
+  const el = document.getElementById('strip-mood');
+  el.textContent = mood; el.style.color = moodCol;
+}
+// init on load
+updateMoodStrip({ total: {{ stats.total or 1 }}, bullish: {{ stats.bullish }}, bearish: {{ stats.bearish }} });
+
+/* ── Tab switching ──────────────────────────────────────────────────────────── */
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ARTICLE TABLE
+══════════════════════════════════════════════════════════════════════════════ */
+function scoreColor(s) {
+  return s > 0.05 ? 'var(--pos)' : s < -0.05 ? 'var(--neg)' : 'var(--neu)';
+}
+function pillClass(l) {
+  return l === 'positive' ? 'pill-pos' : l === 'negative' ? 'pill-neg' : 'pill-neu';
+}
+function gaugeHtml(score) {
+  const pct = Math.abs(score) * 50;
+  const dir = score >= 0
+    ? `left:50%;width:${pct.toFixed(0)}%;background:var(--pos)`
+    : `right:50%;width:${pct.toFixed(0)}%;background:var(--neg)`;
+  return `<div class="score-gauge">
+    <div class="gauge-track">
+      <div class="gauge-center"></div>
+      <div class="gauge-fill" style="${dir}"></div>
+    </div>
+    <span class="score-num" style="color:${scoreColor(score)}">${score}</span>
+  </div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SOURCE BRAND COLORS (for placeholders)
+══════════════════════════════════════════════════════════════════════════════ */
+const SRC_COLORS = {
+  reuters:'#FF8000', dow_jones:'#0273CF', cnbc:'#0093D0',
+  marketwatch:'#c8002b', yahoo_finance:'#6001D2', seeking_alpha:'#1D4ED8',
+  pr_newswire:'#1E3A5F', access_wires:'#2563EB', finance_wire:'#0ea5e9',
+  global_newswire:'#7c3aed', fda:'#003087', sec_edgar:'#004B87',
+  tradingview:'#2962ff', finviz:'#16a34a', finnhub_general:'#2563EB',
+  finnhub_merger:'#4f46e5', newsapi:'#374151',
+};
+function srcColor(source) { return SRC_COLORS[source] || '#1e2d3d'; }
+
+/* ── Thumbnail HTML (table rows) ─────────────────────────────────────────────── */
+function thumbHtml(r) {
+  const bg = srcColor(r.source);
+  const fav = r.source_favicon || '';
+  if (r.image_url) {
+    return `<img class="hl-thumb" src="${r.image_url}" alt=""
+              loading="lazy"
+              onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+            ><div class="hl-thumb-placeholder" style="display:none;background:${bg}20">
+              ${fav ? `<img src="${fav}" alt="">` : ''}
+            </div>`;
+  }
+  return `<div class="hl-thumb-placeholder" style="background:${bg}20">
+    ${fav ? `<img src="${fav}" alt="">` : `<span style="font-size:1rem;opacity:.4">📰</span>`}
+  </div>`;
+}
+
+/* ── Source chip HTML ─────────────────────────────────────────────────────────── */
+function srcChipHtml(r) {
+  const fav = r.source_favicon
+    ? `<img src="${r.source_favicon}" alt="" style="width:12px;height:12px;border-radius:2px;object-fit:contain;flex-shrink:0" onerror="this.style.display='none'">`
+    : '';
+  const lbl = (r.source_label || '').replace(/</g,'&lt;');
+  return `<span class="src-chip">${fav}${lbl}</span>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ARTICLE TABLE
+══════════════════════════════════════════════════════════════════════════════ */
+function renderArticles(rows) {
+  const q = document.getElementById('art-search').value.toLowerCase();
+  const filtered = rows.filter(r => {
+    if (artFilter !== 'all' && r.label !== artFilter) return false;
+    if (q && !r.title.toLowerCase().includes(q) && !r.source_label.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  _artRows = filtered;                  // ← safe click index
+  document.getElementById('art-count').textContent = filtered.length + ' articles';
+  document.getElementById('tab-count-articles').textContent = filtered.length;
+
+  document.getElementById('tbody-articles').innerHTML = filtered.map((r, idx) => {
+    const title = r.title.length > 95 ? r.title.substring(0,95) + '…' : r.title;
+    const barW  = Math.min(r.rank_score * 2, 56).toFixed(0);
+    const top3  = r.rank <= 3 ? 'top3' : '';
+    // ↓ NO JSON in onclick — just the safe integer index
+    return `<tr class="${r.label}-row" data-artidx="${idx}" style="cursor:pointer">
+      <td><span class="rank-num ${top3}">${r.rank}</span></td>
+      <td>${srcChipHtml(r)}</td>
+      <td><span class="tier-badge ${ r.tier===1 ? 't1':'t2' }">T${r.tier}</span></td>
+      <td>
+        <div class="hl-wrap">
+          ${thumbHtml(r)}
+          <div class="hl-text">
+            <span class="hl-title">${title.replace(/</g,'&lt;')}</span>
+            <div class="hl-source-line">${r.published}</div>
+          </div>
+        </div>
+      </td>
+      <td><span class="sentiment-pill ${pillClass(r.label)}"><span class="pill-dot"></span>${r.label}</span></td>
+      <td>${gaugeHtml(r.sentiment_score)}</td>
+      <td style="text-align:center;font-family:var(--mono);font-size:.72rem">${r.message_density}</td>
+      <td><div class="rank-bar-cell">
+        <div class="rank-bar" style="width:${barW}px"></div>
+        <span class="rank-val">${r.rank_score}</span>
+      </div></td>
+      <td><span class="method-chip ${r.method==='FinBERT'?'m-finbert':'m-vader'}">${r.method}</span></td>
+      <td class="time-cell">${r.scored_at}</td>
+    </tr>`;
+  }).join('');
+}
+
+function applyArticleFilter() { renderArticles(articleData); }
+function setFilter(f, btn) {
+  artFilter = f;
+  document.querySelectorAll('#tab-articles .filter-btns .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyArticleFilter();
+}
+function searchArticles() { applyArticleFilter(); }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   TICKER TABLE
+══════════════════════════════════════════════════════════════════════════════ */
+function renderTickers(tickers) {
+  const el = document.getElementById('tbody-tickers');
+  if (!el) return;
+  const q = (document.getElementById('tick-search')||{value:''}).value.toLowerCase();
+  const filtered = tickers.filter(t => {
+    if (tickFilter !== 'all' && t.label !== tickFilter) return false;
+    if (q && !t.ticker.toLowerCase().includes(q) && !(t.top_headline||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  _tickRows = filtered;                 // ← safe click index
+  document.getElementById('tick-count').textContent = filtered.length + ' tickers';
+
+  if (!filtered.length) {
+    el.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted)">No tickers match the current filter</td></tr>`;
+    return;
+  }
+  el.innerHTML = filtered.map((t, idx) => {
+    const symCls = t.label==='positive'?'tsym-pos':t.label==='negative'?'tsym-neg':'tsym-neu';
+    const hl     = (t.top_headline||'').length > 80 ? t.top_headline.substring(0,80)+'…' : (t.top_headline||'—');
+    const tc     = t.avg_trust >= 1.0 ? 'var(--blue2)' : '#70AD47';
+    const top3   = t.rank <= 3 ? 'top3' : '';
+    return `<tr class="${t.label}-row" data-tickidx="${idx}" style="cursor:pointer">
+      <td><span class="rank-num ${top3}">${t.rank}</span></td>
+      <td><div class="ticker-sym-cell"><span class="ticker-sym ${symCls}">${t.ticker}</span></div></td>
+      <td>${gaugeHtml(t.composite_score)}</td>
+      <td style="text-align:center;font-family:var(--mono);font-weight:600">${t.article_count}</td>
+      <td>
+        <div class="breakdown-bar">
+          <div class="bb-bull" style="flex:${t.bullish_count}"></div>
+          <div class="bb-bear" style="flex:${t.bearish_count}"></div>
+          <div class="bb-neu"  style="flex:${t.neutral_count}"></div>
+        </div>
+        <div class="breakdown-counts">
+          <span class="bc-bull">${t.bullish_count}B</span><span style="color:var(--border2)">/</span>
+          <span class="bc-bear">${t.bearish_count}S</span><span style="color:var(--border2)">/</span>
+          <span class="bc-neu">${t.neutral_count}N</span>
+        </div>
+      </td>
+      <td><span class="trust-val" style="color:${tc}">${t.avg_trust}×</span></td>
+      <td class="headline-cell">${hl.replace(/</g,'&lt;')}</td>
+      <td><span class="src-chip">${t.top_source||''}</span></td>
+      <td class="time-cell">${t.last_updated}</td>
+    </tr>`;
+  }).join('');
+}
+
+function applyTickerFilter() { renderTickers(tickerData); }
+function setTickerFilter(f, btn) {
+  tickFilter = f;
+  document.querySelectorAll('#tab-tickers .filter-btns .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyTickerFilter();
+}
+function searchTickers() { applyTickerFilter(); }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   EVENT DELEGATION — single listener on each tbody, reads data-artidx / data-tickidx
+   No JSON embedded in HTML attributes anywhere.
+══════════════════════════════════════════════════════════════════════════════ */
+document.getElementById('tbody-articles').addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-artidx]');
+  if (tr) openArticleModal(parseInt(tr.dataset.artidx, 10));
+});
+document.addEventListener('click', e => {
+  const tr = e.target.closest('#tbody-tickers tr[data-tickidx]');
+  if (tr) openTickerModal(parseInt(tr.dataset.tickidx, 10));
+});
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SORTING
+══════════════════════════════════════════════════════════════════════════════ */
+function _cmp(a,b,col,asc) {
+  const va = a[col], vb = b[col];
+  if (typeof va === 'number') return asc ? va-vb : vb-va;
+  return asc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+}
+document.querySelectorAll('thead th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col, tbl = th.dataset.tbl;
+    if (tbl === 'articles') {
+      artSortAsc = artSortCol === col ? !artSortAsc : true; artSortCol = col;
+      document.querySelectorAll('#news-table thead th').forEach(t => t.classList.remove('sorted-asc','sorted-desc'));
+      th.classList.add(artSortAsc ? 'sorted-asc' : 'sorted-desc');
+      renderArticles([...articleData].sort((a,b) => _cmp(a,b,col,artSortAsc)));
+    } else {
+      tickSortAsc = tickSortCol === col ? !tickSortAsc : true; tickSortCol = col;
+      document.querySelectorAll('#ticker-table thead th').forEach(t => t.classList.remove('sorted-asc','sorted-desc'));
+      th.classList.add(tickSortAsc ? 'sorted-asc' : 'sorted-desc');
+      renderTickers([...tickerData].sort((a,b) => _cmp(a,b,col,tickSortAsc)));
+    }
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ARTICLE MODAL
+══════════════════════════════════════════════════════════════════════════════ */
+async function openArticleModal(idx) {
+  const r = _artRows[idx];
+  if (!r) return;
+
+  document.getElementById('m-title').textContent = r.title;
+  const sc = r.sentiment_score, col = scoreColor(sc);
+  const pct = ((sc + 1) / 2 * 100).toFixed(1);
+
+  // ── Hero image ──────────────────────────────────────────────────────────────
+  const articleImg  = document.getElementById('m-article-img');
+  const placeholder = document.getElementById('m-img-placeholder');
+  const bg = srcColor(r.source);
+  placeholder.style.background = `linear-gradient(135deg, ${bg}22 0%, ${bg}44 100%)`;
+
+  // Reset to placeholder with logo first
+  articleImg.style.display = 'none';
+  placeholder.style.display = 'flex';
+  placeholder.innerHTML = r.source_favicon
+    ? `<img class="logo" src="${r.source_favicon}" alt="" onerror="this.style.display='none'">
+       <div class="modal-img-src-label">${r.source_label}</div>`
+    : `<span style="font-size:2rem;opacity:.3">📰</span>
+       <div class="modal-img-src-label">${r.source_label}</div>`;
+
+  if (r.image_url) {
+    // Stored image — use it directly
+    articleImg.onload  = () => { articleImg.style.display='block'; placeholder.style.display='none'; };
+    articleImg.onerror = () => { articleImg.style.display='none'; };
+    articleImg.src = r.image_url;
+  } else if (r.url && r.url !== '#') {
+    // No stored image — fetch OG image via Microlink (free, no key needed)
+    placeholder.innerHTML = `
+      <div class="modal-img-loading">
+        <div class="spinner"></div> Fetching article preview…
+      </div>`;
+    try {
+      const resp = await fetch(`https://api.microlink.io?url=${encodeURIComponent(r.url)}`, {signal: AbortSignal.timeout(6000)});
+      const data = await resp.json();
+      const imgUrl = data?.data?.image?.url || data?.data?.screenshot?.url;
+      if (imgUrl) {
+        articleImg.onload  = () => { articleImg.style.display='block'; placeholder.style.display='none'; };
+        articleImg.onerror = () => {
+          placeholder.innerHTML = r.source_favicon
+            ? `<img class="logo" src="${r.source_favicon}" alt=""><div class="modal-img-src-label">${r.source_label}</div>`
+            : `<span style="font-size:2rem;opacity:.3">📰</span>`;
+          placeholder.style.display='flex';
+        };
+        articleImg.src = imgUrl;
+        r.image_url = imgUrl;  // cache for next open
+      } else {
+        placeholder.innerHTML = r.source_favicon
+          ? `<img class="logo" src="${r.source_favicon}" alt="" onerror="this.style.display='none'"><div class="modal-img-src-label">${r.source_label}</div>`
+          : `<span style="font-size:2rem;opacity:.3">📰</span><div class="modal-img-src-label">${r.source_label}</div>`;
+      }
+    } catch(_) {
+      placeholder.innerHTML = r.source_favicon
+        ? `<img class="logo" src="${r.source_favicon}" alt=""><div class="modal-img-src-label">${r.source_label}</div>`
+        : `<span style="font-size:2rem;opacity:.3">📰</span>`;
+    }
+  }
+
+  // ── Meter ───────────────────────────────────────────────────────────────────
+  const m = document.getElementById('m-meter');
+  m.style.left='0'; m.style.width=pct+'%'; m.style.background=col;
+  document.getElementById('m-score-lbl').textContent = sc;
+  document.getElementById('m-score-lbl').style.color = col;
+  document.getElementById('m-sentiment').textContent = sc;
+  document.getElementById('m-sentiment').style.color = col;
+  document.getElementById('m-density').textContent = r.message_density;
+  document.getElementById('m-rank').textContent    = r.rank_score;
+
+  // ── Tags ────────────────────────────────────────────────────────────────────
+  const fav = r.source_favicon
+    ? `<img src="${r.source_favicon}" style="width:12px;height:12px;border-radius:2px;object-fit:contain" onerror="this.style.display='none'" alt="">`
+    : '';
+  document.getElementById('m-tags').innerHTML = [
+    `<span class="src-chip">${fav}${(r.source_label||'').replace(/</g,'&lt;')}</span>`,
+    `<span class="tier-badge ${r.tier===1?'t1':'t2'}">Tier ${r.tier}</span>`,
+    `<span class="method-chip ${r.method==='FinBERT'?'m-finbert':'m-vader'}">${r.method}</span>`,
+    `<span style="font-size:.68rem;color:var(--muted)">Scored ${r.scored_at}</span>`,
+    r.tickers ? `<span style="font-size:.68rem;color:#a78bfa;font-family:var(--mono)">${r.tickers}</span>` : '',
+  ].join('');
+
+  // ── Weights ─────────────────────────────────────────────────────────────────
+  const wEl = document.getElementById('m-weights');
+  if (r.trust_weight != null) {
+    wEl.style.display = '';
+    document.getElementById('m-trust').textContent   = (+r.trust_weight||1).toFixed(2)+'×';
+    document.getElementById('m-time').textContent    = (+r.time_weight ||1).toFixed(3);
+    document.getElementById('m-tickers').textContent = r.tickers || '—';
+  } else wEl.style.display = 'none';
+
+  // ── Link ────────────────────────────────────────────────────────────────────
+  const link = document.getElementById('m-link');
+  link.href = r.url || '#';
+  link.style.display = (!r.url || r.url === '#') ? 'none' : 'inline-flex';
+
+  document.getElementById('art-overlay').classList.add('open');
+}
+
+function closeArtModal()  { document.getElementById('art-overlay').classList.remove('open'); }
+function closeArtIfBg(e)  { if (e.target===document.getElementById('art-overlay')) closeArtModal(); }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   TICKER MODAL
+══════════════════════════════════════════════════════════════════════════════ */
+function openTickerModal(idx) {
+  const t = _tickRows[idx];
+  if (!t) return;
+
+  const col     = scoreColor(t.composite_score);
+  const pct     = ((t.composite_score + 1) / 2 * 100).toFixed(1);
+  const symCls  = t.label==='positive'?'tsym-pos':t.label==='negative'?'tsym-neg':'tsym-neu';
+  const pillCls = t.label==='positive'?'pill-pos':t.label==='negative'?'pill-neg':'pill-neu';
+
+  document.getElementById('tm-sym').textContent = t.ticker;
+  document.getElementById('tm-sym').className   = `ticker-sym ${symCls}`;
+  document.getElementById('tm-pill').innerHTML  = `<span class="pill-dot"></span>${t.label}`;
+  document.getElementById('tm-pill').className  = `sentiment-pill ${pillCls}`;
+  document.getElementById('tm-updated').textContent = 'Updated ' + t.last_updated;
+
+  const tm = document.getElementById('tm-meter');
+  tm.style.left='0'; tm.style.width=pct+'%'; tm.style.background=col;
+  document.getElementById('tm-score-lbl').textContent = t.composite_score;
+  document.getElementById('tm-score-lbl').style.color = col;
+  document.getElementById('tm-bull').textContent  = t.bullish_count;
+  document.getElementById('tm-bear').textContent  = t.bearish_count;
+  document.getElementById('tm-neu').textContent   = t.neutral_count;
+  document.getElementById('tm-headline').textContent = t.top_headline || '—';
+  document.getElementById('tm-src').textContent   = t.top_source || '';
+  document.getElementById('tm-count').textContent = t.article_count;
+  document.getElementById('tm-trust').textContent = t.avg_trust + '×';
+
+  const link = document.getElementById('tm-link');
+  link.href = t.top_url || '#';
+  link.style.display = (!t.top_url || t.top_url==='#') ? 'none' : 'inline-flex';
+
+  document.getElementById('tick-overlay').classList.add('open');
+}
+
+function closeTickModal()  { document.getElementById('tick-overlay').classList.remove('open'); }
+function closeTickIfBg(e)  { if (e.target===document.getElementById('tick-overlay')) closeTickModal(); }
+
+document.addEventListener('keydown', e => {
+  if (e.key==='Escape') { closeArtModal(); closeTickModal(); }
+});
+</script>
+</body>
+</html>
