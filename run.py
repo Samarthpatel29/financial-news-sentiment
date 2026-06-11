@@ -30,9 +30,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config.settings import PIPELINE_INTERVAL, DATABASE_URL
 from src.pipeline.crew import SentimentCrew
 from src.storage.models import init_db
+from src.utils.market_hours import market_status, pipeline_interval_seconds
 
 
 def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
+    import datetime as dt
     from apscheduler.schedulers.blocking import BlockingScheduler
 
     if once:
@@ -41,16 +43,36 @@ def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
         return
 
     scheduler = BlockingScheduler()
+    _current_interval = [None]  # mutable ref so inner func can read it
+
+    def smart_cycle():
+        ms = market_status()
+        ideal = pipeline_interval_seconds()
+
+        # Re-schedule if market status changed the ideal interval
+        if _current_interval[0] != ideal:
+            _current_interval[0] = ideal
+            job = scheduler.get_job("sentiment_pipeline")
+            if job:
+                job.reschedule("interval", seconds=ideal)
+            log.info("Pipeline interval → %ds  [%s]", ideal, ms["status"])
+
+        crew.run_cycle()
+
+    interval = pipeline_interval_seconds()
+    _current_interval[0] = interval
+    ms = market_status()
+    log.info("Pipeline starting — %s — interval %ds", ms["label"], interval)
+
     scheduler.add_job(
-        crew.run_cycle,
+        smart_cycle,
         "interval",
-        seconds=PIPELINE_INTERVAL,
+        seconds=interval,
         id="sentiment_pipeline",
         max_instances=1,
         coalesce=True,
-        next_run_time=__import__("datetime").datetime.now(),  # fire immediately
+        next_run_time=dt.datetime.now(),
     )
-    log.info("Pipeline scheduler started (every %ds)", PIPELINE_INTERVAL)
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

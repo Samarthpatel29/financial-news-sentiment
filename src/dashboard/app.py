@@ -4,16 +4,21 @@ import logging
 import os
 import time
 
-from flask import Flask, Response, render_template, stream_with_context
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import Session
 
 from config.settings import DATABASE_URL, DASHBOARD_REFRESH, DASHBOARD_TOP_N
 from src.storage.models import SentimentResult, TickerSentiment, Base
+from src.utils.market_hours import market_status
+from src.dashboard import chatbot
 
 log = logging.getLogger(__name__)
 
 app = Flask(__name__, template_folder="templates")
+# Re-read index.html on every request so edits show up on browser refresh
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 
 TIER1 = {"reuters", "dow_jones", "sec_edgar", "fda"}
 
@@ -36,6 +41,17 @@ SOURCE_DOMAINS = {
     "finnhub_general": "finnhub.io",
     "finnhub_merger":  "finnhub.io",
     "newsapi":         "newsapi.org",
+    "google_news":     "news.google.com",
+    "nasdaq":          "nasdaq.com",
+    "investing_com":   "investing.com",
+    "benzinga":        "benzinga.com",
+    "business_insider":"businessinsider.com",
+    "cnn_business":    "cnn.com",
+    "fortune":         "fortune.com",
+    "reddit_stocks":   "reddit.com",
+    "reddit_wsb":      "reddit.com",
+    "reddit_investing":"reddit.com",
+    "stocktwits":      "stocktwits.com",
 }
 
 SOURCE_LABELS = {
@@ -47,6 +63,12 @@ SOURCE_LABELS = {
     "tradingview": "TradingView", "finviz": "FinViz",
     "finnhub_general": "Finnhub", "finnhub_merger": "Finnhub M&A",
     "newsapi": "NewsAPI",
+    "google_news": "Google News", "nasdaq": "Nasdaq",
+    "investing_com": "Investing.com", "benzinga": "Benzinga",
+    "business_insider": "Business Insider", "cnn_business": "CNN Business",
+    "fortune": "Fortune", "reddit_stocks": "r/stocks",
+    "reddit_wsb": "r/wallstreetbets", "reddit_investing": "r/investing",
+    "stocktwits": "StockTwits",
 }
 
 
@@ -90,12 +112,31 @@ def _row_to_dict(r: SentimentResult, rank: int) -> dict:
 
 
 def _ranked_rows(db: Session) -> list[dict]:
+    import datetime
+    import math
+    from config.settings import TICKER_WINDOW_HOURS, TIME_DECAY_HALFLIFE_HOURS
+
+    # Only the freshness window — rank_score is frozen at scoring time, so
+    # without this cutoff stale articles would dominate the board forever.
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=TICKER_WINDOW_HOURS)
     rows = (
         db.query(SentimentResult)
+        .filter(SentimentResult.scored_at >= cutoff)
         .order_by(desc(SentimentResult.rank_score))
-        .limit(DASHBOARD_TOP_N)
+        .limit(DASHBOARD_TOP_N * 4)
         .all()
     )
+
+    # Re-apply time decay live so newer articles outrank equally-scored old ones
+    now = datetime.datetime.utcnow()
+    k = math.log(2) / TIME_DECAY_HALFLIFE_HOURS
+
+    def _live_rank(r: SentimentResult) -> float:
+        ref = r.published or r.scored_at or now
+        hours_old = max((now - ref).total_seconds() / 3600, 0)
+        return (r.rank_score or 0) * math.exp(-k * hours_old)
+
+    rows = sorted(rows, key=_live_rank, reverse=True)[:DASHBOARD_TOP_N]
     return [_row_to_dict(r, i + 1) for i, r in enumerate(rows)]
 
 
@@ -198,6 +239,66 @@ def api_stats():
     return stats
 
 
+@app.route("/api/market-status")
+def api_market_status():
+    return jsonify(market_status())
+
+
+def _chat_context(db: Session) -> str:
+    """Compact live snapshot to ground the chatbot in real dashboard data."""
+    stats   = _get_stats(db)
+    tickers = _ranked_tickers(db)[:6]
+    rows    = _ranked_rows(db)[:5]
+    ms      = market_status()
+
+    mood = "neutral"
+    if stats["total"]:
+        if stats["bullish"] > stats["bearish"] * 1.2:
+            mood = "mostly bullish (optimistic)"
+        elif stats["bearish"] > stats["bullish"] * 1.2:
+            mood = "mostly bearish (pessimistic)"
+
+    lines = [
+        f"Market status: {ms['label']}.",
+        f"Overall mood: {mood}.",
+        f"Articles analyzed: {stats['total']} "
+        f"({stats['bullish']} bullish, {stats['bearish']} bearish, {stats['neutral']} neutral) "
+        f"from {stats['sources']} sources.",
+    ]
+    if tickers:
+        lines.append("Top tickers by sentiment right now: " + ", ".join(
+            f"{t['ticker']} ({t['label']}, score {t['composite_score']})" for t in tickers
+        ))
+    if rows:
+        lines.append("Top headlines right now:")
+        for r in rows:
+            lines.append(f"  - [{r['label']}] {r['title']} ({r['source_label']})")
+    return "\n".join(lines)
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    payload  = request.get_json(silent=True) or {}
+    messages = payload.get("messages", [])
+    if not isinstance(messages, list) or not messages:
+        return jsonify({"reply": "Ask me anything about the dashboard or investing basics!"})
+
+    # Sanitize to the fields the model needs
+    clean = [
+        {"role": m.get("role", "user"), "content": str(m.get("content", ""))[:2000]}
+        for m in messages if m.get("content")
+    ]
+
+    db = _make_session()
+    try:
+        context = _chat_context(db)
+    finally:
+        db.close()
+
+    reply = chatbot.chat(clean, context=context)
+    return jsonify({"reply": reply})
+
+
 @app.route("/stream")
 def stream():
     def event_gen():
@@ -214,6 +315,7 @@ def stream():
                     "tickers": tickers,
                     "stats": stats,
                     "narrative": narrative,
+                    "market": market_status(),
                 })
                 yield f"data: {payload}\n\n"
             except Exception as exc:

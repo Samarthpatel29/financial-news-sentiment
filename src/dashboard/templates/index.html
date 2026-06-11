@@ -466,23 +466,121 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
   object-fit: contain; flex-shrink: 0;
 }
 
-/* Headline with thumbnail preview */
-.hl-wrap { display: flex; align-items: center; gap: 10px; }
-.hl-thumb {
-  width: 52px; height: 36px; border-radius: 5px;
-  object-fit: cover; flex-shrink: 0;
-  background: var(--surface3); border: 1px solid var(--border);
+/* ── Article card grid ─────────────────────────────────────────────────────── */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+  padding: 16px 20px 20px;
 }
-.hl-thumb-placeholder {
-  width: 52px; height: 36px; border-radius: 5px; flex-shrink: 0;
+.art-card {
+  background: var(--surface);
   border: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: center;
-  overflow: hidden; position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
 }
-.hl-thumb-placeholder img {
-  width: 22px; height: 22px; object-fit: contain;
-  filter: brightness(0) invert(0.6);
+.art-card:hover {
+  border-color: var(--border2);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
+.art-card.positive-row { border-left: 3px solid var(--pos); }
+.art-card.negative-row { border-left: 3px solid var(--neg); }
+.art-card.neutral-row  { border-left: 3px solid var(--neu); }
+
+/* card image */
+.card-img-wrap {
+  width: 100%; height: 175px; overflow: hidden;
+  position: relative; background: var(--surface2); flex-shrink: 0;
+}
+.card-img-wrap img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  transition: transform 0.3s ease;
+}
+.art-card:hover .card-img-wrap img { transform: scale(1.03); }
+.card-img-placeholder {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+}
+.card-img-placeholder img {
+  width: 40px; height: 40px; object-fit: contain;
+  filter: brightness(0) invert(0.4);
+}
+
+/* rank badge overlaid on image */
+.card-rank-badge {
+  position: absolute; top: 8px; left: 8px;
+  background: rgba(7,11,15,0.82); backdrop-filter: blur(4px);
+  border: 1px solid var(--border2); border-radius: 5px;
+  padding: 2px 7px; font-family: var(--mono); font-size: 0.65rem;
+  font-weight: 700; color: var(--text2);
+}
+.card-rank-badge.top3 { color: var(--pos); border-color: rgba(0,212,126,0.3); }
+
+/* sentiment dot overlaid on image */
+.card-sent-badge {
+  position: absolute; top: 8px; right: 8px;
+  padding: 2px 8px; border-radius: 20px;
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.05em;
+  backdrop-filter: blur(4px);
+}
+.card-sent-badge.pos { background: rgba(0,212,126,0.15); color: var(--pos); border: 1px solid rgba(0,212,126,0.3); }
+.card-sent-badge.neg { background: rgba(255,69,96,0.15);  color: var(--neg); border: 1px solid rgba(255,69,96,0.3); }
+.card-sent-badge.neu { background: rgba(245,166,35,0.12); color: var(--neu); border: 1px solid rgba(245,166,35,0.25); }
+
+/* card body */
+.card-body {
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; flex: 1;
+}
+.card-source-row {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-headline {
+  font-size: 0.82rem; font-weight: 600; line-height: 1.4;
+  color: var(--text); display: -webkit-box;
+  -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.card-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: auto; padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.card-score {
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+}
+.card-time {
+  font-size: 0.62rem; color: var(--muted); font-family: var(--mono);
+}
+.card-rank-score {
+  font-size: 0.62rem; color: var(--muted); font-family: var(--mono);
+}
+
+/* ── Market status badge ───────────────────────────────────────────────────── */
+.market-badge {
+  display: flex; align-items: center; gap: 5px;
+  border-radius: 20px; padding: 3px 10px;
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;
+  border: 1px solid transparent; transition: all 0.5s;
+}
+.market-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+}
+.market-open    { background: rgba(0,212,126,0.1); color: #00d47e; border-color: rgba(0,212,126,0.25); }
+.market-open .market-dot { background: #00d47e; animation: glow 2s ease-in-out infinite; }
+.market-pre     { background: rgba(245,166,35,0.1); color: #f5a623; border-color: rgba(245,166,35,0.25); }
+.market-pre .market-dot  { background: #f5a623; }
+.market-after   { background: rgba(155,89,182,0.1); color: #b97de8; border-color: rgba(155,89,182,0.25); }
+.market-after .market-dot { background: #b97de8; }
+.market-closed  { background: rgba(90,122,150,0.1); color: #5a7a96; border-color: rgba(90,122,150,0.2); }
+.market-closed .market-dot { background: #5a7a96; }
+
+/* legacy kept for modal / tickers still using them */
+.hl-wrap { display: flex; align-items: center; gap: 10px; }
 .hl-text { min-width: 0; }
 .hl-title {
   display: block; white-space: nowrap; overflow: hidden;
@@ -490,9 +588,7 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
   max-width: 380px;
 }
 .hl-title:hover { color: var(--blue2); }
-.hl-source-line {
-  font-size: 0.62rem; color: var(--muted); margin-top: 2px;
-}
+.hl-source-line { font-size: 0.62rem; color: var(--muted); margin-top: 2px; }
 
 /* Modal article image */
 .modal-img-wrap {
@@ -715,6 +811,10 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
   </div>
 
   <div class="nav-right">
+    <div class="market-badge market-closed" id="market-badge">
+      <div class="market-dot"></div>
+      <span id="market-label">Market</span>
+    </div>
     <span class="nav-clock" id="nav-clock">--:--:--</span>
     <span class="nav-countdown" id="countdown-badge">↻ {{ refresh }}s</span>
     <div class="live-badge">
@@ -927,87 +1027,45 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
                  oninput="searchArticles(this.value)">
         </div>
       </div>
-      <div class="table-scroll">
-        <table id="news-table">
-          <thead>
-            <tr>
-              <th style="width:36px" data-col="rank" data-tbl="articles">#</th>
-              <th data-col="source_label" data-tbl="articles">Source</th>
-              <th data-col="tier" data-tbl="articles">Tier</th>
-              <th style="width:99%">Headline</th>
-              <th data-col="label" data-tbl="articles">Signal</th>
-              <th data-col="sentiment_score" data-tbl="articles">Score</th>
-              <th data-col="message_density" data-tbl="articles">Density</th>
-              <th data-col="rank_score" data-tbl="articles">Rank ▾</th>
-              <th data-col="method" data-tbl="articles">Model</th>
-              <th data-col="scored_at" data-tbl="articles">Time</th>
-            </tr>
-          </thead>
-          <tbody id="tbody-articles">
-            {% for r in rows %}
-            <tr class="{{ r.label }}-row" data-artidx="{{ loop.index0 }}" style="cursor:pointer">
-              <td><span class="rank-num {% if r.rank <= 3 %}top3{% endif %}">{{ r.rank }}</span></td>
-              <td>
-                <span class="src-chip" title="{{ r.source_label }}">
-                  {% if r.source_favicon %}<img src="{{ r.source_favicon }}" alt="" onerror="this.style.display='none'">{% endif %}
-                  {{ r.source_label }}
-                </span>
-              </td>
-              <td>
-                <span class="tier-badge {{ 't1' if r.tier==1 else 't2' }}"
-                      data-tip="{{ 'Tier 1 — Institutional (1.0×)' if r.tier==1 else 'Tier 2 — Aggregated (0.75×)' }}">
-                  T{{ r.tier }}
-                </span>
-              </td>
-              <td>
-                <div class="hl-wrap">
-                  {% if r.image_url %}
-                  <img class="hl-thumb" src="{{ r.image_url }}" alt=""
-                       onerror="this.outerHTML='<div class=\'hl-thumb-placeholder\'>📰</div>'">
-                  {% else %}
-                  <div class="hl-thumb-placeholder">
-                    {% if r.source_favicon %}<img src="{{ r.source_favicon }}" style="width:20px;height:20px;opacity:.5" alt="">{% else %}📰{% endif %}
-                  </div>
-                  {% endif %}
-                  <div class="hl-text">
-                    <span class="hl-title" title="{{ r.title }}">{{ r.title[:95] }}{% if r.title|length > 95 %}…{% endif %}</span>
-                    <div class="hl-source-line">{{ r.published }}</div>
-                  </div>
-                </div>
-              </td>
-              <td>
-                <span class="sentiment-pill {% if r.label=='positive' %}pill-pos{% elif r.label=='negative' %}pill-neg{% else %}pill-neu{% endif %}">
-                  <span class="pill-dot"></span>{{ r.label }}
-                </span>
-              </td>
-              <td>
-                <div class="score-gauge">
-                  <div class="gauge-track">
-                    <div class="gauge-center"></div>
-                    {% if r.sentiment_score >= 0 %}
-                    <div class="gauge-fill" style="left:50%;width:{{ (r.sentiment_score*50)|int }}%;background:var(--pos)"></div>
-                    {% else %}
-                    <div class="gauge-fill" style="right:50%;width:{{ (r.sentiment_score*-50)|int }}%;background:var(--neg)"></div>
-                    {% endif %}
-                  </div>
-                  <span class="score-num" style="color:{% if r.sentiment_score>0.05 %}var(--pos){% elif r.sentiment_score<-0.05 %}var(--neg){% else %}var(--neu){% endif %}">
-                    {{ r.sentiment_score }}
-                  </span>
-                </div>
-              </td>
-              <td style="text-align:center;font-family:var(--mono);font-size:.72rem">{{ r.message_density }}</td>
-              <td>
-                <div class="rank-bar-cell">
-                  <div class="rank-bar" style="width:{{ [r.rank_score*2,56]|min|int }}px"></div>
-                  <span class="rank-val">{{ r.rank_score }}</span>
-                </div>
-              </td>
-              <td><span class="method-chip {{ 'm-finbert' if r.method=='FinBERT' else 'm-vader' }}">{{ r.method }}</span></td>
-              <td class="time-cell">{{ r.scored_at }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      <div id="cards-articles" class="cards-grid">
+        {% for r in rows %}
+        <div class="art-card {{ r.label }}-row" data-artidx="{{ loop.index0 }}">
+          <div class="card-img-wrap">
+            {% if r.image_url %}
+            <img src="{{ r.image_url }}" alt=""
+                 onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+            <div class="card-img-placeholder" style="display:none;background:linear-gradient(135deg,{{ r.source }}20,{{ r.source }}40)">
+              {% if r.source_favicon %}<img src="{{ r.source_favicon }}" alt="">{% endif %}
+            </div>
+            {% else %}
+            <div class="card-img-placeholder" style="background:linear-gradient(135deg,var(--surface2),var(--surface3))">
+              {% if r.source_favicon %}<img src="{{ r.source_favicon }}" alt="">{% endif %}
+            </div>
+            {% endif %}
+            <span class="card-rank-badge {% if r.rank <= 3 %}top3{% endif %}">#{{ r.rank }}</span>
+            <span class="card-sent-badge {% if r.label=='positive' %}pos{% elif r.label=='negative' %}neg{% else %}neu{% endif %}">
+              {{ '▲ BULL' if r.label=='positive' else '▼ BEAR' if r.label=='negative' else '● NEU' }}
+            </span>
+          </div>
+          <div class="card-body">
+            <div class="card-source-row">
+              <span class="src-chip">
+                {% if r.source_favicon %}<img src="{{ r.source_favicon }}" alt="" onerror="this.style.display='none'">{% endif %}
+                {{ r.source_label }}
+              </span>
+              <span class="tier-badge {{ 't1' if r.tier==1 else 't2' }}">T{{ r.tier }}</span>
+            </div>
+            <div class="card-headline">{{ r.title }}</div>
+            <div class="card-meta">
+              <span class="card-score" style="color:{% if r.sentiment_score>0.05 %}var(--pos){% elif r.sentiment_score<-0.05 %}var(--neg){% else %}var(--neu){% endif %}">
+                {{ '%+.3f'|format(r.sentiment_score) }}
+              </span>
+              <span class="card-rank-score">rank {{ r.rank_score }}</span>
+              <span class="card-time">{{ r.published }}</span>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
       </div>
     </div>
 
@@ -1236,6 +1294,152 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
   </div>
 </div>
 
+<!-- ══ CHATBOT — Sentiment Buddy ════════════════════════════════════════════ -->
+<style>
+.chat-fab {
+  position: fixed; bottom: 24px; right: 24px; z-index: 500;
+  width: 58px; height: 58px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--blue) 0%, var(--pos) 100%);
+  border: none; cursor: pointer; color: #fff; font-size: 1.5rem;
+  box-shadow: 0 6px 20px rgba(41,121,255,0.4);
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.chat-fab:hover { transform: scale(1.08); box-shadow: 0 8px 28px rgba(0,212,126,0.45); }
+.chat-fab.hidden { display: none; }
+.chat-fab .pulse {
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 2px solid var(--pos); animation: chatpulse 2s ease-out infinite;
+}
+@keyframes chatpulse {
+  0%   { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.chat-panel {
+  position: fixed; bottom: 24px; right: 24px; z-index: 501;
+  width: 380px; max-width: calc(100vw - 32px);
+  height: 560px; max-height: calc(100vh - 90px);
+  background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+  display: none; flex-direction: column; overflow: hidden;
+}
+.chat-panel.open { display: flex; }
+
+.chat-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 16px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, rgba(41,121,255,0.12), rgba(0,212,126,0.08));
+}
+.chat-avatar {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--blue), var(--pos));
+  display: flex; align-items: center; justify-content: center; font-size: 1.1rem;
+}
+.chat-head-info { flex: 1; min-width: 0; }
+.chat-head-name { font-weight: 700; font-size: 0.85rem; color: var(--text); }
+.chat-head-sub  { font-size: 0.65rem; color: var(--pos); display: flex; align-items: center; gap: 4px; }
+.chat-head-sub .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--pos); }
+.chat-close {
+  cursor: pointer; color: var(--muted); font-size: 1.2rem;
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border-radius: 6px; transition: background 0.15s, color 0.15s;
+}
+.chat-close:hover { background: var(--surface3); color: var(--text); }
+
+.chat-body {
+  flex: 1; overflow-y: auto; padding: 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.chat-msg { display: flex; gap: 8px; max-width: 90%; }
+.chat-msg.user { align-self: flex-end; flex-direction: row-reverse; }
+.chat-bubble {
+  padding: 9px 13px; border-radius: 12px; font-size: 0.8rem; line-height: 1.5;
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.chat-msg.bot  .chat-bubble { background: var(--surface3); color: var(--text); border-bottom-left-radius: 3px; }
+.chat-msg.user .chat-bubble { background: linear-gradient(135deg, var(--blue), #1f6fe0); color: #fff; border-bottom-right-radius: 3px; }
+.chat-mini-avatar {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--blue), var(--pos));
+  display: flex; align-items: center; justify-content: center; font-size: 0.85rem;
+}
+
+.chat-typing { display: flex; gap: 4px; padding: 11px 14px; }
+.chat-typing span {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+  animation: typingbounce 1.2s infinite ease-in-out;
+}
+.chat-typing span:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingbounce {
+  0%,60%,100% { transform: translateY(0); opacity: 0.4; }
+  30%         { transform: translateY(-5px); opacity: 1; }
+}
+
+.chat-suggestions {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 10px;
+}
+.chat-chip {
+  font-size: 0.68rem; padding: 5px 10px; border-radius: 14px;
+  background: var(--surface3); border: 1px solid var(--border2);
+  color: var(--text2); cursor: pointer; transition: all 0.15s;
+}
+.chat-chip:hover { background: var(--surface2); color: var(--text); border-color: var(--blue); }
+
+.chat-input-row {
+  display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border);
+}
+.chat-input {
+  flex: 1; background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: 10px; padding: 9px 12px; color: var(--text);
+  font-family: var(--font); font-size: 0.8rem; resize: none; outline: none;
+  max-height: 80px;
+}
+.chat-input:focus { border-color: var(--blue); }
+.chat-send {
+  width: 38px; height: 38px; border-radius: 10px; border: none; cursor: pointer;
+  background: linear-gradient(135deg, var(--blue), var(--pos)); color: #fff;
+  font-size: 1rem; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  transition: opacity 0.15s;
+}
+.chat-send:disabled { opacity: 0.4; cursor: default; }
+.chat-disclaimer { font-size: 0.58rem; color: var(--muted); text-align: center; padding: 0 14px 8px; }
+</style>
+
+<button class="chat-fab" id="chat-fab" onclick="toggleChat()" title="Ask Sentiment Buddy">
+  <span class="pulse"></span>💬
+</button>
+
+<div class="chat-panel" id="chat-panel">
+  <div class="chat-head">
+    <div class="chat-avatar">🤖</div>
+    <div class="chat-head-info">
+      <div class="chat-head-name">Sentiment Buddy</div>
+      <div class="chat-head-sub"><span class="dot"></span>Free AI tutor · Groq</div>
+    </div>
+    <div class="chat-close" onclick="toggleChat()">✕</div>
+  </div>
+  <div class="chat-body" id="chat-body">
+    <div class="chat-msg bot">
+      <div class="chat-mini-avatar">🤖</div>
+      <div class="chat-bubble">Hi! I'm Sentiment Buddy 👋 I can explain how this dashboard works and teach you investing basics — no experience needed. What would you like to know?</div>
+    </div>
+  </div>
+  <div class="chat-suggestions" id="chat-suggestions">
+    <div class="chat-chip" onclick="sendSuggestion(this)">What is a sentiment score?</div>
+    <div class="chat-chip" onclick="sendSuggestion(this)">What does bullish mean?</div>
+    <div class="chat-chip" onclick="sendSuggestion(this)">How does this dashboard work?</div>
+    <div class="chat-chip" onclick="sendSuggestion(this)">What's the market mood right now?</div>
+  </div>
+  <div class="chat-input-row">
+    <textarea class="chat-input" id="chat-input" rows="1" placeholder="Ask anything…"
+              onkeydown="chatKeydown(event)" oninput="chatAutogrow(this)"></textarea>
+    <button class="chat-send" id="chat-send" onclick="sendChat()">➤</button>
+  </div>
+  <div class="chat-disclaimer">For learning only — not financial advice.</div>
+</div>
+
 <script>
 /* ════════════════════════════════════════════════════════════════════════════
    STATE
@@ -1260,6 +1464,28 @@ function updateClock() {
     n.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
 }
 updateClock(); setInterval(updateClock, 1000);
+
+/* ── Market status badge ─────────────────────────────────────────────────────── */
+function updateMarketBadge(ms) {
+  const el = document.getElementById('market-badge');
+  const lbl = document.getElementById('market-label');
+  if (!el || !ms) return;
+  el.className = 'market-badge';
+  if (ms.status === 'OPEN')        el.classList.add('market-open');
+  else if (ms.status === 'PRE-MARKET') el.classList.add('market-pre');
+  else if (ms.status === 'AFTER-HOURS') el.classList.add('market-after');
+  else                              el.classList.add('market-closed');
+  lbl.textContent = ms.label;
+}
+async function fetchMarketStatus() {
+  try {
+    const r = await fetch('/api/market-status');
+    const ms = await r.json();
+    updateMarketBadge(ms);
+  } catch(_) {}
+}
+fetchMarketStatus();
+setInterval(fetchMarketStatus, 60_000);
 
 /* ── Countdown / progress ───────────────────────────────────────────────────── */
 const progBar = document.getElementById('progress-bar');
@@ -1293,6 +1519,7 @@ es.onmessage = e => {
     updateMoodStrip(s);
   }
   if (p.narrative) document.getElementById('narrative-text').textContent = p.narrative;
+  if (p.market)  updateMarketBadge(p.market);
   countdown = REFRESH;
 };
 es.onerror = () => { document.getElementById('live-label').textContent = 'Reconnecting'; };
@@ -1360,6 +1587,10 @@ const SRC_COLORS = {
   global_newswire:'#7c3aed', fda:'#003087', sec_edgar:'#004B87',
   tradingview:'#2962ff', finviz:'#16a34a', finnhub_general:'#2563EB',
   finnhub_merger:'#4f46e5', newsapi:'#374151',
+  google_news:'#4285F4', nasdaq:'#0092CF', investing_com:'#1256A0',
+  benzinga:'#0b66c2', business_insider:'#185f7d', cnn_business:'#cc0000',
+  fortune:'#e62b1e', reddit_stocks:'#FF4500', reddit_wsb:'#FF4500',
+  reddit_investing:'#FF4500', stocktwits:'#40A2FF',
 };
 function srcColor(source) { return SRC_COLORS[source] || '#1e2d3d'; }
 
@@ -1390,8 +1621,23 @@ function srcChipHtml(r) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   ARTICLE TABLE
+   ARTICLE CARD GRID
 ══════════════════════════════════════════════════════════════════════════════ */
+function cardImgHtml(r) {
+  const bg = srcColor(r.source);
+  const fav = r.source_favicon
+    ? `<img src="${r.source_favicon}" alt="" onerror="this.style.display='none'">`
+    : '';
+  const placeholder = `<div class="card-img-placeholder" style="background:linear-gradient(135deg,${bg}18,${bg}35)">${fav}</div>`;
+  if (r.image_url) {
+    return `<img src="${r.image_url}" alt="" loading="lazy"
+              onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+            ${placeholder.replace('display:flex','display:none').replace('card-img-placeholder','card-img-placeholder').replace('</div>','</div>').replace('flex','none')}
+            <div class="card-img-placeholder" style="display:none;background:linear-gradient(135deg,${bg}18,${bg}35)">${fav}</div>`;
+  }
+  return placeholder;
+}
+
 function renderArticles(rows) {
   const q = document.getElementById('art-search').value.toLowerCase();
   const filtered = rows.filter(r => {
@@ -1399,38 +1645,50 @@ function renderArticles(rows) {
     if (q && !r.title.toLowerCase().includes(q) && !r.source_label.toLowerCase().includes(q)) return false;
     return true;
   });
-  _artRows = filtered;                  // ← safe click index
+  _artRows = filtered;
   document.getElementById('art-count').textContent = filtered.length + ' articles';
   document.getElementById('tab-count-articles').textContent = filtered.length;
 
-  document.getElementById('tbody-articles').innerHTML = filtered.map((r, idx) => {
-    const title = r.title.length > 95 ? r.title.substring(0,95) + '…' : r.title;
-    const barW  = Math.min(r.rank_score * 2, 56).toFixed(0);
-    const top3  = r.rank <= 3 ? 'top3' : '';
-    // ↓ NO JSON in onclick — just the safe integer index
-    return `<tr class="${r.label}-row" data-artidx="${idx}" style="cursor:pointer">
-      <td><span class="rank-num ${top3}">${r.rank}</span></td>
-      <td>${srcChipHtml(r)}</td>
-      <td><span class="tier-badge ${ r.tier===1 ? 't1':'t2' }">T${r.tier}</span></td>
-      <td>
-        <div class="hl-wrap">
-          ${thumbHtml(r)}
-          <div class="hl-text">
-            <span class="hl-title">${title.replace(/</g,'&lt;')}</span>
-            <div class="hl-source-line">${r.published}</div>
-          </div>
+  const sentBadge = l => l === 'positive' ? 'pos' : l === 'negative' ? 'neg' : 'neu';
+  const sentLabel = l => l === 'positive' ? '▲ BULL' : l === 'negative' ? '▼ BEAR' : '● NEU';
+  const scoreColor2 = s => s > 0.05 ? 'var(--pos)' : s < -0.05 ? 'var(--neg)' : 'var(--neu)';
+  const top3Class = r => r.rank <= 3 ? 'top3' : '';
+  const fav = r => r.source_favicon
+    ? `<img src="${r.source_favicon}" alt="" style="width:12px;height:12px;border-radius:2px;object-fit:contain" onerror="this.style.display='none'">`
+    : '';
+
+  document.getElementById('cards-articles').innerHTML = filtered.map((r, idx) => {
+    const bg = srcColor(r.source);
+    const ph = r.source_favicon
+      ? `<img src="${r.source_favicon}" alt="" onerror="this.style.display='none'">`
+      : '';
+    const imgHtml = r.image_url
+      ? `<img src="${r.image_url}" alt="" loading="lazy"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+         <div class="card-img-placeholder" style="display:none;background:linear-gradient(135deg,${bg}18,${bg}38)">${ph}</div>`
+      : `<div class="card-img-placeholder" style="background:linear-gradient(135deg,${bg}18,${bg}38)">${ph}</div>`;
+
+    const scoreStr = (r.sentiment_score >= 0 ? '+' : '') + r.sentiment_score.toFixed(3);
+
+    return `<div class="art-card ${r.label}-row" data-artidx="${idx}">
+      <div class="card-img-wrap">
+        ${imgHtml}
+        <span class="card-rank-badge ${top3Class(r)}">#${r.rank}</span>
+        <span class="card-sent-badge ${sentBadge(r.label)}">${sentLabel(r.label)}</span>
+      </div>
+      <div class="card-body">
+        <div class="card-source-row">
+          <span class="src-chip">${fav(r)}${(r.source_label||'').replace(/</g,'&lt;')}</span>
+          <span class="tier-badge ${r.tier===1?'t1':'t2'}">T${r.tier}</span>
         </div>
-      </td>
-      <td><span class="sentiment-pill ${pillClass(r.label)}"><span class="pill-dot"></span>${r.label}</span></td>
-      <td>${gaugeHtml(r.sentiment_score)}</td>
-      <td style="text-align:center;font-family:var(--mono);font-size:.72rem">${r.message_density}</td>
-      <td><div class="rank-bar-cell">
-        <div class="rank-bar" style="width:${barW}px"></div>
-        <span class="rank-val">${r.rank_score}</span>
-      </div></td>
-      <td><span class="method-chip ${r.method==='FinBERT'?'m-finbert':'m-vader'}">${r.method}</span></td>
-      <td class="time-cell">${r.scored_at}</td>
-    </tr>`;
+        <div class="card-headline">${r.title.replace(/</g,'&lt;')}</div>
+        <div class="card-meta">
+          <span class="card-score" style="color:${scoreColor2(r.sentiment_score)}">${scoreStr}</span>
+          <span class="card-rank-score">rank ${r.rank_score}</span>
+          <span class="card-time">${r.published}</span>
+        </div>
+      </div>
+    </div>`;
   }).join('');
 }
 
@@ -1505,9 +1763,9 @@ function searchTickers() { applyTickerFilter(); }
    EVENT DELEGATION — single listener on each tbody, reads data-artidx / data-tickidx
    No JSON embedded in HTML attributes anywhere.
 ══════════════════════════════════════════════════════════════════════════════ */
-document.getElementById('tbody-articles').addEventListener('click', e => {
-  const tr = e.target.closest('tr[data-artidx]');
-  if (tr) openArticleModal(parseInt(tr.dataset.artidx, 10));
+document.getElementById('cards-articles').addEventListener('click', e => {
+  const card = e.target.closest('.art-card[data-artidx]');
+  if (card) openArticleModal(parseInt(card.dataset.artidx, 10));
 });
 document.addEventListener('click', e => {
   const tr = e.target.closest('#tbody-tickers tr[data-tickidx]');
@@ -1687,6 +1945,101 @@ function closeTickIfBg(e)  { if (e.target===document.getElementById('tick-overla
 document.addEventListener('keydown', e => {
   if (e.key==='Escape') { closeArtModal(); closeTickModal(); }
 });
+
+/* ════════════════════════════════════════════════════════════════════════════
+   CHATBOT — Sentiment Buddy
+════════════════════════════════════════════════════════════════════════════ */
+let chatHistory = [];   // [{role, content}]
+let chatBusy = false;
+
+function toggleChat() {
+  const panel = document.getElementById('chat-panel');
+  const fab   = document.getElementById('chat-fab');
+  const open  = panel.classList.toggle('open');
+  fab.classList.toggle('hidden', open);
+  if (open) setTimeout(() => document.getElementById('chat-input').focus(), 100);
+}
+
+function chatAutogrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 80) + 'px';
+}
+
+function chatKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+}
+
+function appendMsg(role, text) {
+  const body = document.getElementById('chat-body');
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-msg ' + (role === 'user' ? 'user' : 'bot');
+  const avatar = role === 'user' ? '' : '<div class="chat-mini-avatar">🤖</div>';
+  const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  wrap.innerHTML = `${avatar}<div class="chat-bubble">${safe}</div>`;
+  body.appendChild(wrap);
+  body.scrollTop = body.scrollHeight;
+  return wrap;
+}
+
+function showTyping() {
+  const body = document.getElementById('chat-body');
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-msg bot';
+  wrap.id = 'chat-typing-row';
+  wrap.innerHTML = `<div class="chat-mini-avatar">🤖</div>
+    <div class="chat-bubble"><div class="chat-typing"><span></span><span></span><span></span></div></div>`;
+  body.appendChild(wrap);
+  body.scrollTop = body.scrollHeight;
+}
+function hideTyping() {
+  const t = document.getElementById('chat-typing-row');
+  if (t) t.remove();
+}
+
+function sendSuggestion(el) {
+  document.getElementById('chat-input').value = el.textContent;
+  sendChat();
+}
+
+async function sendChat() {
+  if (chatBusy) return;
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  // Hide starter suggestions after first message
+  const sugg = document.getElementById('chat-suggestions');
+  if (sugg) sugg.style.display = 'none';
+
+  appendMsg('user', text);
+  chatHistory.push({role: 'user', content: text});
+  input.value = '';
+  input.style.height = 'auto';
+
+  chatBusy = true;
+  document.getElementById('chat-send').disabled = true;
+  showTyping();
+
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({messages: chatHistory}),
+    });
+    const data = await resp.json();
+    hideTyping();
+    const reply = data.reply || "Sorry, I didn't catch that.";
+    appendMsg('bot', reply);
+    chatHistory.push({role: 'assistant', content: reply});
+  } catch (err) {
+    hideTyping();
+    appendMsg('bot', "Sorry — I couldn't reach the AI just now. Please try again.");
+  } finally {
+    chatBusy = false;
+    document.getElementById('chat-send').disabled = false;
+    document.getElementById('chat-input').focus();
+  }
+}
 </script>
 </body>
 </html>

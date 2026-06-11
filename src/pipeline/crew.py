@@ -6,7 +6,7 @@ import concurrent.futures
 from typing import List
 
 from config.settings import GROQ_API_KEY, CREW_LLM_MODEL, E2E_DEADLINE, PIPELINE_INTERVAL
-from src.collectors import RSSCollector, ScraperCollector, BrokerCollector
+from src.collectors import RSSCollector, ScraperCollector, BrokerCollector, StockTwitsCollector
 from src.sentiment import SentimentScorer
 from src.storage.models import SentimentResult, init_db
 from src.pipeline.aggregator import aggregate_tickers
@@ -66,27 +66,30 @@ class SentimentCrew:
     """
 
     def __init__(self):
-        self._rss     = RSSCollector()
-        self._scraper = ScraperCollector()
-        self._broker  = BrokerCollector()
-        self._scorer  = SentimentScorer()
-        self._db      = init_db()
-        self._crew    = _make_crew()
+        self._rss        = RSSCollector()
+        self._scraper    = ScraperCollector()
+        self._broker     = BrokerCollector()
+        self._stocktwits = StockTwitsCollector()
+        self._scorer     = SentimentScorer()
+        self._db         = init_db()
+        self._crew       = _make_crew()
 
     def run_cycle(self) -> List[SentimentResult]:
         t0 = time.monotonic()
         log.info("── Pipeline cycle started ──")
 
         # 1. Collect from all sources in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             rss_f     = pool.submit(self._rss.collect)
             scraper_f = pool.submit(self._scraper.collect)
             broker_f  = pool.submit(self._broker.collect)
+            st_f      = pool.submit(self._stocktwits.collect)
             rss_arts     = rss_f.result()
             scraper_arts = scraper_f.result()
             broker_arts  = broker_f.result()
+            st_arts      = st_f.result()
 
-        all_articles = rss_arts + scraper_arts + broker_arts
+        all_articles = rss_arts + scraper_arts + broker_arts + st_arts
         log.info("Collected %d articles  (%.1fs)", len(all_articles), time.monotonic() - t0)
 
         if not all_articles:
@@ -111,6 +114,27 @@ class SentimentCrew:
         }
         new_articles = [a for a in unique if a.url not in existing_urls]
         log.info("New articles not yet in DB: %d", len(new_articles))
+
+        # 3b. Backfill images for existing rows that have none —
+        #     feeds re-serve the same articles, so the fresh fetch often has
+        #     an image the older DB row is missing.
+        fresh_imgs = {a.url: a.image_url for a in unique if a.image_url}
+        if existing_urls and fresh_imgs:
+            rows_missing_img = (
+                self._db.query(SentimentResult)
+                .filter(SentimentResult.url.in_(list(existing_urls)))
+                .filter((SentimentResult.image_url == "") | (SentimentResult.image_url.is_(None)))
+                .all()
+            )
+            filled = 0
+            for row in rows_missing_img:
+                img = fresh_imgs.get(row.url)
+                if img:
+                    row.image_url = img
+                    filled += 1
+            if filled:
+                self._db.commit()
+                log.info("Backfilled images on %d existing articles", filled)
 
         if not new_articles:
             log.info("No new articles this cycle — skipping scoring")
