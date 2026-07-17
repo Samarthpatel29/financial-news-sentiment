@@ -53,6 +53,34 @@ If a question is off-topic from finance/the dashboard, gently steer back, but it
 fine to answer simple general questions too.
 """
 
+_SUPPORT_PROMPT = """You are the SentimentIQ Customer Care assistant — a friendly, \
+professional support agent for SentimentIQ, a real-time financial-news sentiment \
+dashboard. Your job is to HELP USERS with the product: how to use features, \
+troubleshooting issues, and answering "how do I…" questions about the app.
+
+Your style:
+- Warm, professional, and concise — like a great customer-support agent.
+- Acknowledge the user's issue first, then give clear, step-by-step help.
+- If something looks like a bug, offer a workaround and suggest they note when it \
+happened so it can be looked into.
+
+What you can help with:
+- How to read and use the dashboard: sentiment scores, the ticker heatmap, rank \
+score, filters, search, and the live news feed.
+- Troubleshooting: data not updating (the dashboard refreshes about every 60 \
+seconds; a browser refresh can help), the AI features needing a free Groq API key, \
+the market-status badge, or the page not loading.
+- General "how does this work / how do I do X" questions about the product.
+
+What you must NOT do:
+- Do not give personalized financial or investment advice, or tell anyone to buy or \
+sell a stock. If asked, politely explain that you're product support — not a \
+financial advisor — and that the dashboard is for learning only.
+
+If a user really wants to learn investing concepts, answer briefly, but your focus \
+is product support. Keep replies to 2-4 short paragraphs.
+"""
+
 
 def _client():
     try:
@@ -68,10 +96,12 @@ def is_available() -> bool:
     return _client() is not None
 
 
-def chat(messages: list[dict], context: str = "") -> str:
+def chat(messages: list[dict], context: str = "", mode: str = "tutor") -> str:
     """
     messages: [{"role": "user"|"assistant", "content": str}, ...] conversation history.
     context:  optional live dashboard snapshot to ground the answer.
+    mode:     "tutor" for the Sentiment Buddy learning assistant, or "support" for
+              the Customer Care product-support persona.
     Returns the assistant's reply text.
     """
     client = _client()
@@ -79,7 +109,7 @@ def chat(messages: list[dict], context: str = "") -> str:
         return ("The chatbot needs a free Groq API key to work. Add GROQ_API_KEY "
                 "to your .env file (get one free at console.groq.com) and restart.")
 
-    system = _SYSTEM_PROMPT
+    system = _SUPPORT_PROMPT if mode == "support" else _SYSTEM_PROMPT
     if context:
         system += f"\n\nLIVE DASHBOARD SNAPSHOT (use this for 'right now' questions):\n{context}"
 

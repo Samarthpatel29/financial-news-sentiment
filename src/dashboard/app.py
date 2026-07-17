@@ -1,4 +1,5 @@
 from __future__ import annotations
+import datetime
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import Session
 
 from config.settings import DATABASE_URL, DASHBOARD_REFRESH, DASHBOARD_TOP_N
+from config.sectors import sector_of as _sector_of
 from src.storage.models import SentimentResult, TickerSentiment, Base
 from src.utils.market_hours import market_status
 from src.dashboard import chatbot
@@ -186,8 +188,162 @@ def _ranked_tickers(db: Session) -> list[dict]:
             "top_source":     SOURCE_LABELS.get(t.top_source, (t.top_source or "").title()),
             "top_url":        t.top_url or "#",
             "last_updated":   t.last_updated.strftime("%H:%M:%S") if t.last_updated else "—",
+            "sector":         _sector_of(t.ticker),
         })
     return out
+
+
+def _fundamental_rows(db: Session) -> list[dict]:
+    """
+    Long-term fundamentals screener: tickers ranked by their 7-day SEC-filing
+    signal, each with the recent filings (form, verdict, Groq summary, link).
+    """
+    from src.storage.models import Filing
+    rows = (db.query(TickerSentiment)
+            .filter(TickerSentiment.filing_count_7d > 0)
+            .all())
+    if not rows:
+        return []
+
+    # Rank by the blended Continuation score (news + filings + price record)
+    rows_sorted = sorted(rows, key=lambda t: (t.continuation_score or 0.0), reverse=True)
+    out = []
+    for i, t in enumerate(rows_sorted, 1):
+        fs = (db.query(Filing)
+              .filter(Filing.ticker == t.ticker)
+              .order_by(Filing.filed_at.desc())
+              .limit(6).all())
+        filings = [{
+            "form":      f.form_type,
+            "kind":      f.section_kind,
+            "filed":     f.filed_at.strftime("%b %d") if f.filed_at else "—",
+            "verdict":   f.llm_verdict or "Stable",
+            "score":     round(f.fundamental_score or 0.0, 3),
+            "summary":   f.llm_summary or "",
+            "url":       f.url or "#",
+        } for f in fs]
+        # Bull/bear strength from this week's news mix
+        n_arts = max(1, (t.bullish_count or 0) + (t.bearish_count or 0) + (t.neutral_count or 0))
+        bull_pct = round((t.bullish_count or 0) / n_arts * 100)
+        bear_pct = round((t.bearish_count or 0) / n_arts * 100)
+
+        # Confidence: how much evidence backs this prediction (data volume + agreement)
+        n_filings = db.query(Filing).filter(Filing.ticker == t.ticker).count()
+        evidence = min(40, n_filings * 3) + min(25, n_arts * 2)
+        agreement = abs(t.continuation_score or 0.0) * 30
+        confidence = min(95, round(35 + evidence * 0.6 + agreement))
+
+        pred = t.continuation_score or 0.0
+        signal = "BUY" if pred > 0.12 else "SELL" if pred < -0.12 else "HOLD"
+
+        # Event types driving this signal (from the filing kinds present)
+        kinds = {f.section_kind for f in fs}
+        event_types = sorted(k for k in kinds if k)
+
+        # Volatility tag from the all-time price record
+        vol = t.price_volatility
+        vol_tag = ("VOLATILE" if vol and vol >= 45 else
+                   "STABLE" if vol and vol < 25 else
+                   "MODERATE" if vol else "")
+
+        out.append({
+            "rank":     i,
+            "ticker":   t.ticker,
+            "score":    round(t.fundamental_score or 0.0, 3),
+            "verdict":  t.fundamental_verdict or "Stable",
+            "count":    t.filing_count_7d,
+            "filing_total": n_filings,
+            "last":     t.last_filing_at.strftime("%b %d") if t.last_filing_at else "—",
+            # ── Prediction signal ──────────────────────────────────────────────
+            "continuation":       round(pred, 3),
+            "continuation_label": t.continuation_label or "Mixed",
+            "signal":             signal,
+            "confidence":         confidence,
+            "uncertainty":        100 - confidence,
+            "sector":             _sector_of(t.ticker),
+            "event_types":        event_types,
+            "vol_tag":            vol_tag,
+            "volatility":         vol,
+            "bull_pct":           bull_pct,
+            "bear_pct":           bear_pct,
+            "article_count":      t.article_count or 0,
+            "headline":           t.top_headline or "",
+            "headline_source":    SOURCE_LABELS.get(t.top_source or "", t.top_source or ""),
+            "headline_url":       t.top_url or "",
+            "news_score":         round(t.composite_score or 0.0, 3),
+            "price_score":        round(t.price_score or 0.0, 3),
+            "return_1y":          t.price_return_1y,
+            "return_5y":          t.price_return_5y,
+            "pct_from_ath":       t.pct_from_ath,
+            "filings":            filings,
+        })
+    return out
+
+
+def _signal_accuracy(db: Session) -> dict:
+    """Honest self-score: % of graded signals (last 30d) that proved correct."""
+    from src.storage.models import SignalHistory
+    import datetime as _dt
+    cutoff = _dt.datetime.utcnow() - _dt.timedelta(days=30)
+    scored = (db.query(SignalHistory)
+              .filter(SignalHistory.correct.isnot(None),
+                      SignalHistory.created_at >= cutoff)
+              .all())
+    if not scored:
+        return {"pct": None, "n": 0}
+    correct = sum(1 for s in scored if s.correct)
+    return {"pct": round(correct / len(scored) * 100), "n": len(scored)}
+
+
+@app.route("/api/fundamentals")
+def api_fundamentals():
+    db = _make_session()
+    try:
+        return jsonify({
+            "data": _fundamental_rows(db),
+            "accuracy": _signal_accuracy(db),
+        })
+    finally:
+        db.close()
+
+
+@app.route("/api/ticker-events/<ticker>")
+def api_ticker_events(ticker):
+    """Chronological timeline: SEC filings + this week's news for one ticker."""
+    from src.storage.models import Filing
+    sym = ticker.upper().lstrip("$")
+    db = _make_session()
+    try:
+        events = []
+        for f in (db.query(Filing).filter(Filing.ticker == sym)
+                  .order_by(desc(Filing.filed_at)).limit(20).all()):
+            events.append({
+                "kind":    "filing",
+                "date":    f.filed_at.strftime("%Y-%m-%d") if f.filed_at else "",
+                "title":   f"{f.form_type} — {f.section_kind or 'filing'}",
+                "detail":  f.llm_summary or "",
+                "score":   round(f.fundamental_score or 0.0, 3),
+                "url":     f.url or "",
+            })
+        week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+        arts = (db.query(SentimentResult)
+                .filter(SentimentResult.tickers.like(f"%{sym}%"),
+                        SentimentResult.published >= week_ago)
+                .order_by(desc(SentimentResult.rank_score))
+                .limit(15).all())
+        for a in arts:
+            events.append({
+                "kind":    "news",
+                "date":    a.published.strftime("%Y-%m-%d") if a.published else "",
+                "title":   a.title,
+                "detail":  SOURCE_LABELS.get(a.source, a.source),
+                "score":   round(a.sentiment_score or 0.0, 3),
+                "url":     a.url or "",
+            })
+        events.sort(key=lambda e: e["date"], reverse=True)
+        return jsonify({"ticker": sym, "events": events})
+    finally:
+        db.close()
 
 
 def _get_narrative() -> str:
@@ -244,6 +400,26 @@ def api_market_status():
     return jsonify(market_status())
 
 
+@app.route("/api/price/<ticker>")
+def api_price(ticker):
+    """All-time price history + reliability stats (free, via yfinance)."""
+    from src.collectors.price_history import get_price_stats
+    stats = get_price_stats(ticker)
+    if not stats:
+        return jsonify({"error": "no price history", "ticker": ticker.upper()}), 404
+    return jsonify(stats)
+
+
+@app.route("/api/candles/<ticker>")
+def api_candles(ticker):
+    """Recent daily OHLC candles for the candlestick chart (free, via yfinance)."""
+    from src.collectors.price_history import get_candles
+    candles = get_candles(ticker)
+    if not candles:
+        return jsonify({"error": "no candles", "ticker": ticker.upper()}), 404
+    return jsonify({"ticker": ticker.upper(), "candles": candles})
+
+
 def _chat_context(db: Session) -> str:
     """Compact live snapshot to ground the chatbot in real dashboard data."""
     stats   = _get_stats(db)
@@ -280,6 +456,9 @@ def _chat_context(db: Session) -> str:
 def api_chat():
     payload  = request.get_json(silent=True) or {}
     messages = payload.get("messages", [])
+    mode     = payload.get("mode", "tutor")
+    if mode not in ("tutor", "support"):
+        mode = "tutor"
     if not isinstance(messages, list) or not messages:
         return jsonify({"reply": "Ask me anything about the dashboard or investing basics!"})
 
@@ -295,7 +474,7 @@ def api_chat():
     finally:
         db.close()
 
-    reply = chatbot.chat(clean, context=context)
+    reply = chatbot.chat(clean, context=context, mode=mode)
     return jsonify({"reply": reply})
 
 

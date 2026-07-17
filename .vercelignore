@@ -1,0 +1,23 @@
+# Keep the deployment tiny — Vercel only needs public/ and api/chat.py.
+# Everything below is the local ML pipeline (1.4 GB) that must NOT be uploaded.
+.venv/
+__pycache__/
+*.pyc
+data/
+src/
+config/
+tests/
+docs/
+Charts/
+Activity Logs/
+Weekly Reports/
+*.docx
+*.xlsx
+*.pdf
+run.py
+export_static.py
+start.sh
+push_weekly.sh
+requirements.txt
+.env
+.claude/

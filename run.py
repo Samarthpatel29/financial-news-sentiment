@@ -73,6 +73,30 @@ def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
         coalesce=True,
         next_run_time=dt.datetime.now(),
     )
+
+    # Long-term fundamentals: SEC filings change a few times a day, so run on a
+    # slow 6-hour cadence. First run is delayed 2 min so the news cycle can
+    # populate the tracked-ticker list first.
+    def fundamentals_cycle():
+        from src.storage.models import init_db
+        from src.pipeline.fundamentals import run_fundamentals_cycle
+        try:
+            db = init_db()
+            n = run_fundamentals_cycle(db)
+            db.close()
+            log.info("Fundamentals cycle done — %d new filings", n)
+        except Exception as exc:
+            log.warning("Fundamentals cycle error: %s", exc)
+
+    scheduler.add_job(
+        fundamentals_cycle,
+        "interval",
+        seconds=6 * 3600,
+        id="fundamentals_pipeline",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=dt.datetime.now() + dt.timedelta(minutes=2),
+    )
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

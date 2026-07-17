@@ -98,8 +98,17 @@ DEFAULT_TRUST_WEIGHT = 0.75   # Tier 2
 TIME_DECAY_HALFLIFE_HOURS = float(os.getenv("TIME_DECAY_HALFLIFE_HOURS", 24))
 
 # ── Ticker aggregation window ─────────────────────────────────────────────────
-# Only articles from the last N hours are included in per-ticker aggregation
-TICKER_WINDOW_HOURS = int(os.getenv("TICKER_WINDOW_HOURS", 48))
+# Only articles from the last N hours are included in per-ticker aggregation.
+# 168h = one week: the prediction engine reads "financial news for the week".
+TICKER_WINDOW_HOURS = int(os.getenv("TICKER_WINDOW_HOURS", 168))
+
+# ── Prediction engine (0 external AI calls needed) ────────────────────────────
+# Groq summaries are optional flavor text; set to "0" to run fully local
+# (FinBERT scores everything on-device, SEC/RSS are plain free downloads).
+USE_GROQ_SUMMARIES = os.getenv("USE_GROQ_SUMMARIES", "1") == "1"
+# How many historical 10-K/10-Q filings per company to score for the all-time
+# report trajectory (16 ≈ 4 years of quarterly+annual reports).
+REPORT_HISTORY_MAX_FILINGS = int(os.getenv("REPORT_HISTORY_MAX_FILINGS", 16))
 
 # ── Dashboard ──────────────────────────────────────────────────────────────────
 DASHBOARD_REFRESH = PIPELINE_INTERVAL
