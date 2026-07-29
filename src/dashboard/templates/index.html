@@ -8,31 +8,33 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  --bg:        #070b0f;
-  --bg2:       #0c1117;
-  --surface:   #111820;
-  --surface2:  #162030;
-  --surface3:  #1a2535;
-  --border:    #1e2d3d;
-  --border2:   #243447;
-  --text:      #e2eaf3;
-  --text2:     #a8b8cc;
-  --muted:     #5a7a96;
+  /* Softer professional navy-slate instead of stark near-black */
+  --bg:        #0d1220;
+  --bg2:       #111a2b;
+  --surface:   #172234;
+  --surface2:  #1d2a40;
+  --surface3:  #24344e;
+  --border:    #26344a;
+  --border2:   #34455f;
+  /* Higher-contrast, more readable text */
+  --text:      #f0f4fa;
+  --text2:     #c2cee0;
+  --muted:     #8ba0b8;
 
-  --pos:       #00d47e;
-  --pos2:      #00ff9d;
-  --neg:       #ff4560;
+  --pos:       #14c98a;
+  --pos2:      #3ce0a4;
+  --neg:       #f0475f;
   --neg2:      #ff6b84;
   --neu:       #f5a623;
   --neu2:      #ffbd4f;
-  --blue:      #2979ff;
-  --blue2:     #5b9bd5;
+  --blue:      #4a90ff;
+  --blue2:     #7cb0ee;
   --purple:    #9b59b6;
   --orange:    #ed7d31;
 
-  --pos-bg:    rgba(0,212,126,0.06);
-  --neg-bg:    rgba(255,69,96,0.07);
-  --neu-bg:    rgba(245,166,35,0.04);
+  --pos-bg:    rgba(20,201,138,0.08);
+  --neg-bg:    rgba(240,71,95,0.08);
+  --neu-bg:    rgba(245,166,35,0.06);
 
   --font:      'Inter', system-ui, sans-serif;
   --mono:      'JetBrains Mono', 'Courier New', monospace;
@@ -44,9 +46,10 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.55;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────────────── */
@@ -520,16 +523,17 @@ body {
   background: rgba(255,69,96,.06); border: 1px solid rgba(255,69,96,.25);
 }
 .sig-event.pos-ev { background: rgba(0,212,126,.06); border-color: rgba(0,212,126,.25); }
-.sig-event .t { font-size: 0.6rem; letter-spacing: .07em; text-transform: uppercase; color: var(--neg2); margin-bottom: 5px; }
+.sig-event .t { font-size: 0.72rem; font-weight: 600; color: var(--neg2); margin-bottom: 6px; }
 .sig-event.pos-ev .t { color: var(--pos2); }
 .sig-event .h { font-size: 0.82rem; color: var(--text); line-height: 1.4; }
 .sig-event .m { font-size: 0.64rem; color: var(--muted); margin-top: 5px; }
-.sig-tabs { display: flex; border-bottom: 1px solid var(--border); margin: 16px 0 0; }
+.sig-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 16px 0 0; flex-wrap: wrap; }
 .sig-tab {
-  padding: 9px 16px; font-size: 0.68rem; font-family: var(--mono); letter-spacing: .04em;
+  padding: 9px 14px; font-size: 0.8rem; font-weight: 600; font-family: var(--font);
   color: var(--muted); background: none; border: none; cursor: pointer;
-  border-bottom: 2px solid transparent;
+  border-bottom: 2px solid transparent; transition: color 0.15s;
 }
+.sig-tab:hover { color: var(--text2); }
 .sig-tab.active { color: var(--text); border-bottom-color: var(--blue); }
 .sig-pane { padding: 16px 0; }
 .sig-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
@@ -537,13 +541,33 @@ body {
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
   padding: 12px 14px;
 }
-.sig-cell .k { font-size: 0.58rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.sig-cell .k { font-size: 0.7rem; color: var(--muted); letter-spacing: .01em; margin-bottom: 6px; }
 .sig-cell .v { font-family: var(--mono); font-size: 1.05rem; font-weight: 600; }
 .sig-note {
   margin-top: 14px; padding: 10px 13px; border-radius: 8px;
   background: rgba(245,166,35,.07); border: 1px solid rgba(245,166,35,.25);
-  font-size: 0.66rem; color: var(--text2);
+  font-size: 0.72rem; color: var(--text2); line-height: 1.55;
 }
+
+/* ── Finviz cross-check verdict banner ──────────────────────────────────────── */
+.verify-verdict {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; border-radius: 10px; border: 1px solid var(--border2);
+}
+.verify-verdict.vf-agree    { background: rgba(20,201,138,.10); border-color: rgba(20,201,138,.35); }
+.verify-verdict.vf-mixed    { background: rgba(245,166,35,.10); border-color: rgba(245,166,35,.32); }
+.verify-verdict.vf-disagree { background: rgba(240,71,95,.10);  border-color: rgba(240,71,95,.35); }
+.vf-icon {
+  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.3rem; font-weight: 700;
+}
+.vf-agree .vf-icon    { background: rgba(20,201,138,.2); color: var(--pos2); }
+.vf-mixed .vf-icon    { background: rgba(245,166,35,.2); color: var(--neu2); }
+.vf-disagree .vf-icon { background: rgba(240,71,95,.2);  color: var(--neg2); }
+.vf-line { font-size: 0.9rem; color: var(--text); }
+.vf-line b { font-weight: 700; }
+.vf-sub { font-size: 0.74rem; color: var(--muted); margin-top: 3px; }
 
 /* ══ MARKET PULSE — sentiment treemap ════════════════════════════════════════ */
 .pulse-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
@@ -592,6 +616,33 @@ body { padding-bottom: 44px; }
 }
 .strip-chip:hover { border-color: var(--border2); color: var(--text); }
 .strip-chip .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Friendly section header (self-explanatory) ─────────────────────────────── */
+.section-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  background: var(--bg2); flex-shrink: 0; flex-wrap: wrap;
+}
+.section-title {
+  font-size: 1.15rem; font-weight: 700; color: var(--text);
+  letter-spacing: -0.01em; margin-bottom: 5px;
+}
+.section-desc {
+  font-size: 0.82rem; color: var(--text2); line-height: 1.55; max-width: 620px;
+}
+.section-desc b { color: var(--text); font-weight: 600; }
+.muted-note { color: var(--muted); }
+.section-head-side { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.signal-legend { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+.leg {
+  font-size: 0.68rem; font-weight: 600; padding: 3px 10px; border-radius: 20px;
+  border: 1px solid transparent;
+}
+.leg-buy  { color: var(--pos2); background: rgba(20,201,138,.10); border-color: rgba(20,201,138,.28); }
+.leg-hold { color: var(--neu2); background: rgba(245,166,35,.10); border-color: rgba(245,166,35,.26); }
+.leg-sell { color: var(--neg2); background: rgba(240,71,95,.10); border-color: rgba(240,71,95,.28); }
+.section-head-meta { display: flex; align-items: center; gap: 10px; }
+.accuracy-note { font-size: 0.68rem; color: var(--muted); }
 
 /* ── Table toolbar ──────────────────────────────────────────────────────────── */
 .table-toolbar {
@@ -1249,7 +1300,7 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
           <div class="chat-avatar">🤖</div>
           <div class="chat-head-info">
             <div class="chat-head-name">Sentiment Buddy</div>
-            <div class="chat-head-sub"><span class="dot"></span>Free AI tutor · Groq</div>
+            <div class="chat-head-sub" id="ai-head-sub"><span class="dot"></span>Free AI tutor · Groq</div>
           </div>
         </div>
         <div class="chat-body" id="ai-body">
@@ -1453,15 +1504,28 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
 
     <!-- ══ TAB: FUNDAMENTALS (long-term, SEC filings) ═══════════════════════════ -->
     <div id="tab-fundamentals" class="tab-panel active">
-      <div class="table-toolbar">
-        <span class="toolbar-title">AI Signals · Improvement Predictor</span>
-        <span class="toolbar-count" id="fund-count">—</span>
-        <span style="font-size:0.66rem;color:var(--muted);margin-left:6px">
-          company reports (all time) + financial news (this week) · educational only
-        </span>
-        <div class="toolbar-spacer"></div>
-        <span id="sig-accuracy" style="font-size:0.64rem;color:var(--muted);font-family:var(--mono);margin-right:8px"></span>
-        <button class="filter-btn" onclick="loadFundamentals()">↻ Refresh</button>
+      <div class="section-head">
+        <div class="section-head-main">
+          <h2 class="section-title">Which stocks look set to improve?</h2>
+          <p class="section-desc">
+            Every stock gets a <b>Buy</b>, <b>Sell</b>, or <b>Hold</b> rating that blends four signals:
+            this week's <b>news</b>, its <b>price momentum</b>, <b>Wall-Street analyst</b> consensus, and its <b>SEC filings</b>.
+            Open any stock's <b>Breakdown</b> tab to see all four.
+            <span class="muted-note">A sentiment-and-data blend, for learning — not financial advice.</span>
+          </p>
+        </div>
+        <div class="section-head-side">
+          <div class="signal-legend">
+            <span class="leg leg-buy">Buy · likely to improve</span>
+            <span class="leg leg-hold">Hold · unclear</span>
+            <span class="leg leg-sell">Sell · likely to weaken</span>
+          </div>
+          <div class="section-head-meta">
+            <span class="toolbar-count" id="fund-count">—</span>
+            <span id="sig-accuracy" class="accuracy-note"></span>
+            <button class="filter-btn" onclick="loadFundamentals()">↻ Refresh</button>
+          </div>
+        </div>
       </div>
       <div class="empty-state" id="fund-empty">
         <div class="icon">🏛️</div>
@@ -1975,19 +2039,50 @@ if (window.STATIC_MODE) {
       if (m) return _origFetch('data/price/' + decodeURIComponent(m[1]).replace(/[^A-Za-z0-9._-]/g,'') + '.json', opts);
       m = url.match(/^\/api\/candles\/(.+)$/);
       if (m) return _origFetch('data/candles/' + decodeURIComponent(m[1]).replace(/[^A-Za-z0-9._-]/g,'') + '.json', opts);
+      // Finviz verify is a LIVE serverless function on Vercel — reshape the URL
+      // from the Flask style (/api/verify/AAPL?signal=BUY) to /api/verify?t=…
+      m = url.match(/^\/api\/verify\/([^?]+)(\?.*)?$/);
+      if (m) {
+        const t = decodeURIComponent(m[1]).replace(/[^A-Za-z0-9.\-]/g,'');
+        const sig = (m[2] || '').replace(/^\?/, '');
+        return _origFetch('/api/verify?t=' + t + (sig ? '&' + sig : ''), opts);
+      }
       // /api/chat stays a real serverless function; /api/ticker-events has no
       // static equivalent, so the Timeline tab degrades gracefully.
     }
     return _origFetch(url, opts);
   };
-  // Show when this snapshot was taken instead of a live countdown
+  // Show when this snapshot was taken instead of a live countdown.
+  // A bare date read the same whether the snapshot was 5 minutes or 5 days
+  // old, so the age is spelled out and flagged once the data goes stale.
   window.addEventListener('DOMContentLoaded', () => {
+    const stamp = window.GENERATED_AT || '';
+    let ageTxt = '', stale = false;
+    const when = Date.parse((stamp || '').replace(' UTC', 'Z').replace(' ', 'T'));
+    if (!isNaN(when)) {
+      const hrs = (Date.now() - when) / 3.6e6;
+      stale = hrs >= 24;
+      ageTxt = hrs < 1  ? ' · just now'
+             : hrs < 24 ? ` · ${Math.round(hrs)}h old`
+                        : ` · ${Math.round(hrs / 24)}d old`;
+    }
     const cd = document.getElementById('countdown-badge');
-    if (cd) cd.textContent = 'snapshot ' + (window.GENERATED_AT || '');
+    if (cd) {
+      cd.textContent = 'snapshot ' + stamp + ageTxt;
+      if (stale) cd.style.color = 'var(--neg)';
+    }
     const lb = document.getElementById('live-label');
-    if (lb) lb.textContent = 'SNAPSHOT';
+    if (lb) lb.textContent = stale ? 'STALE SNAPSHOT' : 'SNAPSHOT';
     const pb = document.getElementById('progress-bar');
     if (pb) pb.style.display = 'none';
+    if (stale) {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'padding:8px 14px;background:rgba(220,38,38,.12);' +
+        'color:var(--neg);font-size:.78rem;text-align:center;border-bottom:1px solid var(--border2)';
+      banner.textContent = 'This is a saved snapshot from ' + stamp +
+        ', not live market data. Sentiment shown here may no longer reflect the market.';
+      document.body.prepend(banner);
+    }
   });
 }
 
@@ -2062,7 +2157,21 @@ function contClass(l) {
   return (l === 'Strong Uptrend' || l === 'Building') ? 'v-improving'
        : l === 'Weak' ? 'v-deteriorating' : 'v-stable';
 }
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Escapes quotes too: esc() is used inside HTML attributes (href="${esc(u)}",
+// onclick="f('${esc(x)}')") and headline/URL text comes from untrusted RSS and
+// StockTwits feeds, so a lone " or ' would break out of the attribute.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Only allow links the browser can safely follow — blocks javascript:, data:
+// and other scheme-based injection coming from feed-supplied URLs.
+function safeUrl(u) {
+  const s = String(u == null ? '' : u).trim();
+  return /^https?:\/\//i.test(s) ? esc(s) : '#';
+}
 
 let _sigData = [];
 let _sigDir  = 'all';
@@ -2125,6 +2234,8 @@ async function loadFundamentals() {
     if (!_sigSel || !data.some(r => r.ticker === _sigSel)) _sigSel = data[0].ticker;
     renderSignalList();
     renderSigDetail();
+    // The chat already grounds itself on _sigSel, so say so from the first paint
+    focusChatOn(_sigSel);
     _fundLoaded = true;
   } catch (err) {
     empty.style.display = 'flex';
@@ -2190,6 +2301,27 @@ function selectSignal(ticker) {
   _sigSel = ticker;
   renderSignalList();
   renderSigDetail();
+  focusChatOn(ticker);
+}
+
+/* Point Sentiment Buddy at the stock the user just opened: say so in the header
+   and offer questions about THAT stock instead of the generic starter chips. */
+function focusChatOn(ticker) {
+  const sub = document.getElementById('ai-head-sub');
+  if (sub) sub.innerHTML = `<span class="dot"></span>Asking about ${esc(ticker)}`;
+
+  const box = document.getElementById('ai-suggestions');
+  if (!box) return;
+  const r = (_sigData || []).find(x => x.ticker === ticker);
+  const chips = [
+    `Why is ${ticker} a ${r ? r.signal : 'BUY'}?`,
+    `What did ${ticker}'s latest filing say?`,
+    `How risky is ${ticker}?`,
+    `What's driving ${ticker}'s news score?`,
+  ];
+  box.innerHTML = chips.map(c =>
+    `<div class="chat-chip" onclick="AiChat.suggest(this)">${esc(c)}</div>`).join('');
+  box.style.display = '';   // send() hides the row; a new stock brings it back
 }
 
 function sigTab(btn, pane) {
@@ -2200,34 +2332,105 @@ function sigTab(btn, pane) {
   el.style.display = 'block';
   if (pane === 'view' && !el.dataset.loaded) loadSigView();
   if (pane === 'timeline' && !el.dataset.loaded) loadSigTimeline();
+  if (pane === 'verify' && !el.dataset.loaded) loadSigVerify();
 }
 
-/* Plain-English "why" — composed from the data we already have (0 API calls) */
+/* Independent cross-check against Finviz (analysts + real performance) */
+async function loadSigVerify() {
+  const r = _sigData.find(x => x.ticker === _sigSel);
+  if (!r) return;
+  const pane = document.getElementById('sig-pane-verify');
+  const fvLink = `https://finviz.com/quote.ashx?t=${encodeURIComponent(r.ticker)}`;
+  pane.innerHTML = '<div class="fund-meta">Checking Finviz for the latest analyst data…</div>';
+  try {
+    const resp = await fetch(`/api/verify/${encodeURIComponent(r.ticker)}?signal=${encodeURIComponent(r.signal)}`,
+                             {signal: AbortSignal.timeout(15000)});
+    if (!resp.ok) throw new Error('unavailable');
+    const v = await resp.json();
+
+    const verdict = {
+      AGREE:    {cls: 'vf-agree',  icon: '✓', text: 'Finviz analysts AGREE with this rating'},
+      MIXED:    {cls: 'vf-mixed',  icon: '≈', text: 'Partly aligned — analysts are more neutral'},
+      DISAGREE: {cls: 'vf-disagree', icon: '✕', text: 'Finviz analysts DISAGREE with this rating'},
+      UNKNOWN:  {cls: 'vf-mixed',  icon: '?', text: 'No analyst consensus available'},
+    }[v.agreement || 'UNKNOWN'];
+
+    const recomWord = v.recom == null ? '—'
+      : v.recom <= 1.5 ? 'Strong Buy' : v.recom <= 2.5 ? 'Buy'
+      : v.recom <= 3.5 ? 'Hold' : v.recom <= 4.5 ? 'Sell' : 'Strong Sell';
+    const perfCell = (k, val) => {
+      const num = parseFloat((val || '').replace('%',''));
+      const c = isNaN(num) ? 'var(--muted)' : num >= 0 ? 'var(--pos)' : 'var(--neg)';
+      return `<div class="sig-cell"><div class="k">${k}</div><div class="v" style="color:${c}">${val || '—'}</div></div>`;
+    };
+
+    pane.innerHTML = `
+      <div class="verify-verdict ${verdict.cls}">
+        <span class="vf-icon">${verdict.icon}</span>
+        <div>
+          <div class="vf-line">Our rating: <b>${r.signal}</b> &nbsp;·&nbsp; Finviz analysts: <b>${v.recom_signal || '—'}</b> (${recomWord}, ${v.recom ?? '—'}/5)</div>
+          <div class="vf-sub">${verdict.text}</div>
+        </div>
+      </div>
+      <div class="sig-grid" style="margin-top:14px">
+        <div class="sig-cell"><div class="k">Current price (Finviz)</div><div class="v">${v.price != null ? '$'+v.price : '—'}</div></div>
+        <div class="sig-cell"><div class="k">Analyst price target</div><div class="v">${v.target != null ? '$'+v.target : '—'}</div></div>
+        <div class="sig-cell"><div class="k">Implied upside</div><div class="v" style="color:${v.target_upside>=0?'var(--pos)':'var(--neg)'}">${v.target_upside != null ? (v.target_upside>=0?'+':'')+v.target_upside+'%' : '—'}</div></div>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin:14px 0 6px">Actual performance (proof it has been moving):</div>
+      <div class="sig-grid">
+        ${perfCell('This week', v.perf_week)}
+        ${perfCell('This month', v.perf_month)}
+        ${perfCell('This year', v.perf_year)}
+        ${perfCell('Year to date', v.perf_ytd)}
+      </div>
+      <div class="sig-note">
+        This pulls <b>live</b> analyst and price data from Finviz to independently check the rating.
+        AGREE means Wall Street analysts point the same way we do; the performance figures show whether
+        the stock has actually moved. <a class="fund-link" href="${safeUrl(fvLink)}" target="_blank" rel="noopener">See the full page on Finviz ↗</a>
+      </div>`;
+    pane.dataset.loaded = '1';
+  } catch (err) {
+    pane.innerHTML = `
+      <div class="sig-note">Couldn't reach Finviz automatically right now. You can still verify this stock yourself:
+      <a class="fund-link" href="${safeUrl(fvLink)}" target="_blank" rel="noopener">open ${esc(r.ticker)} on Finviz ↗</a> and compare its analyst rating and performance to our ${esc(r.signal)} signal.</div>`;
+  }
+}
+
+/* Plain-English "why" — composed from the four real components (0 API calls) */
 function sigReasoning(r) {
   const parts = [];
   const act = r.signal === 'BUY' ? 'a BUY' : r.signal === 'SELL' ? 'a SELL' : 'a HOLD';
-  parts.push(`The model rates ${r.ticker} ${act} with ${r.confidence}% confidence (prediction score ${sgn(r.continuation)}).`);
+  parts.push(`The model rates ${r.ticker} ${act} with ${r.confidence}% confidence (overall score ${sgn(r.continuation)}). This blends four signals — news, price momentum, analyst view, and SEC filings.`);
 
-  if (r.score > 0.15)
-    parts.push(`Its official SEC reports read positively — the all-time report signal is ${sgn(r.score)} and the latest filings look "${r.verdict}". Reports carry 60% of the prediction, so this is the main driver.`);
-  else if (r.score < -0.15)
-    parts.push(`Its official SEC reports read negatively (${sgn(r.score)}, "${r.verdict}"). Reports carry 60% of the prediction, so this weighs heavily.`);
-  else
-    parts.push(`Its SEC reports read roughly neutral (${sgn(r.score)}), so the news is doing most of the work this week.`);
+  const say = (name, v, good, bad, weight) => {
+    if (v == null) return;
+    if (v > 0.12) parts.push(`${name} is positive (${sgn(v)}) — ${good}. (${weight})`);
+    else if (v < -0.12) parts.push(`${name} is negative (${sgn(v)}) — ${bad}. (${weight})`);
+    else parts.push(`${name} is roughly neutral (${sgn(v)}). (${weight})`);
+  };
 
   const na = r.article_count || 0;
-  if (na > 0)
-    parts.push(`This week's news: ${na} article${na > 1 ? 's' : ''}, ${r.bull_pct}% bullish vs ${r.bear_pct}% bearish (news score ${sgn(r.news_score)}), contributing the other 40%.`);
+  say('This week\'s news', r.comp_news,
+      `${r.bull_pct}% of ${na} articles were bullish`,
+      `${r.bear_pct}% of ${na} articles were bearish`, '30%');
+  say('Price momentum', r.comp_momentum,
+      `the stock has been trending up (1-yr ${r.return_1y}%)`,
+      `the stock has been trending down (1-yr ${r.return_1y}%)`, '30%');
+  if (r.comp_analysts != null)
+    say('Wall-Street analysts', r.comp_analysts,
+        `they lean Buy (Finviz consensus ${r.analyst_recom}/5, where 1 = Strong Buy)`,
+        `they lean Sell (Finviz consensus ${r.analyst_recom}/5, where 5 = Strong Sell)`, '25%');
   else
-    parts.push(`There was little news coverage this week, so the signal leans almost entirely on the filings.`);
+    parts.push(`Analyst consensus wasn't available for ${r.ticker}, so the other three signals were re-weighted to fill in. (25%)`);
+  say('SEC filings', r.comp_reports,
+      `recent filings read as improving`,
+      `recent filings read as deteriorating`, '15%');
 
   if (r.vol_tag === 'VOLATILE')
-    parts.push(`Caution: this stock's price history is highly volatile (${r.volatility}% annualized), so signals move fast here.`);
-  else if (r.vol_tag === 'STABLE')
-    parts.push(`Its price history is comparatively stable (${r.volatility}% annualized volatility) — a steadier long-term profile.`);
-
+    parts.push(`Heads up: ${r.ticker} is historically volatile (${r.volatility}% a year), so its rating can swing fast.`);
   if (r.uncertainty >= 40)
-    parts.push(`Uncertainty is high (${r.uncertainty}%) because only ${r.filing_total} report${r.filing_total === 1 ? '' : 's'} and ${na} article${na === 1 ? '' : 's'} back this signal — treat it as an early read.`);
+    parts.push(`Uncertainty is high (${r.uncertainty}%) — only ${r.filing_total} report${r.filing_total === 1 ? '' : 's'} and ${na} article${na === 1 ? '' : 's'} back this, so treat it as an early read.`);
 
   return parts;
 }
@@ -2249,7 +2452,7 @@ async function loadSigTimeline() {
             <span style="font-family:var(--mono);font-size:.68rem;color:${pcol(e.score)}"> ${e.score >= 0 ? '+' : ''}${e.score.toFixed(2)}</span>
           </div>
           ${e.detail ? `<div class="tl-detail">${esc(e.detail)}</div>` : ''}
-          ${e.url ? `<a class="fund-link" href="${esc(e.url)}" target="_blank" rel="noopener">open ↗</a>` : ''}
+          ${e.url ? `<a class="fund-link" href="${safeUrl(e.url)}" target="_blank" rel="noopener">open ↗</a>` : ''}
         </div>
       </div>`).join('');
     pane.dataset.loaded = '1';
@@ -2272,7 +2475,7 @@ function renderSigDetail() {
         <span class="fund-score" style="color:${pcol(f.score)}">${f.score>=0?'+':''}${f.score.toFixed(3)}</span>
       </div>
       ${f.summary ? `<div class="fund-summary">${esc(f.summary)}</div>` : ''}
-      <a class="fund-link" href="${esc(f.url)}" target="_blank" rel="noopener">Read filing on SEC.gov ↗</a>
+      <a class="fund-link" href="${safeUrl(f.url)}" target="_blank" rel="noopener">Read filing on SEC.gov ↗</a>
     </div>`).join('') || '<div class="fund-meta" style="padding:8px 0">No filings this week — prediction uses the all-time report history.</div>';
 
   const wl = getWL();
@@ -2311,35 +2514,44 @@ function renderSigDetail() {
     </div>
     ${r.headline ? `
     <div class="sig-event ${evPos ? 'pos-ev' : ''}">
-      <div class="t">Triggering headline</div>
+      <div class="t">📰 Top headline driving this</div>
       <div class="h">${esc(r.headline)}</div>
-      <div class="m">${esc(r.headline_source)}${r.headline_url ? ` · <a class="fund-link" href="${esc(r.headline_url)}" target="_blank" rel="noopener">read article ↗</a>` : ''}</div>
+      <div class="m">${esc(r.headline_source)}${r.headline_url ? ` · <a class="fund-link" href="${safeUrl(r.headline_url)}" target="_blank" rel="noopener">read article ↗</a>` : ''}</div>
     </div>` : ''}
     <div class="sig-tabs">
-      <button class="sig-tab active" onclick="sigTab(this,'breakdown')">◉ BREAKDOWN</button>
-      <button class="sig-tab" onclick="sigTab(this,'reasoning')">✦ AI REASONING</button>
-      <button class="sig-tab" onclick="sigTab(this,'timeline')">◷ TIMELINE</button>
-      <button class="sig-tab" onclick="sigTab(this,'filings')">⚡ REPORTS</button>
-      <button class="sig-tab" onclick="sigTab(this,'view')">◈ INVESTMENT VIEW</button>
+      <button class="sig-tab active" onclick="sigTab(this,'view')">Chart</button>
+      <button class="sig-tab" onclick="sigTab(this,'reasoning')">Why this rating</button>
+      <button class="sig-tab" onclick="sigTab(this,'filings')">Reports</button>
+      <button class="sig-tab" onclick="sigTab(this,'breakdown')">Breakdown</button>
+      <button class="sig-tab" onclick="sigTab(this,'verify')">✓ Verify on Finviz</button>
+      <button class="sig-tab" onclick="sigTab(this,'timeline')">Timeline</button>
     </div>
-    <div class="sig-pane" id="sig-pane-breakdown">
+    <div class="sig-pane" id="sig-pane-breakdown" style="display:none">
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:8px">The rating blends four signals. Each runs from −1 (bad) to +1 (good):</div>
       <div class="sig-grid">
-        <div class="sig-cell"><div class="k">Reports (all time)</div><div class="v" style="color:${pcol(r.score)}">${sgn(r.score)}</div></div>
-        <div class="sig-cell"><div class="k">News (this week)</div><div class="v" style="color:${pcol(r.news_score)}">${sgn(r.news_score)}</div></div>
-        <div class="sig-cell"><div class="k">Prediction</div><div class="v" style="color:${pcol(r.continuation)}">${sgn(r.continuation)}</div></div>
-        <div class="sig-cell"><div class="k">Report verdict</div><div class="v" style="font-size:.85rem">${esc(r.verdict)}</div></div>
+        <div class="sig-cell"><div class="k">📰 News (this week) · 30%</div><div class="v" style="color:${pcol(r.comp_news)}">${r.comp_news==null?'—':sgn(r.comp_news)}</div></div>
+        <div class="sig-cell"><div class="k">📈 Price momentum · 30%</div><div class="v" style="color:${pcol(r.comp_momentum)}">${r.comp_momentum==null?'—':sgn(r.comp_momentum)}</div></div>
+        <div class="sig-cell"><div class="k">👔 Analyst view · 25%</div><div class="v" style="color:${pcol(r.comp_analysts)}">${r.comp_analysts==null?'n/a':sgn(r.comp_analysts)}${r.analyst_recom!=null?` <span style="font-size:.6rem;color:var(--muted)">(Finviz ${r.analyst_recom}/5)</span>`:''}</div></div>
+        <div class="sig-cell"><div class="k">🏛️ Reports (SEC) · 15%</div><div class="v" style="color:${pcol(r.comp_reports)}">${r.comp_reports==null?'—':sgn(r.comp_reports)}</div></div>
       </div>
-      <div class="sig-note">Prediction = 60% report signal (all-time 10-K/10-Q trajectory) + 40% weekly news sentiment. Educational purposes only — not financial advice. Always do your own due diligence.</div>
+      <div class="sig-grid" style="margin-top:10px">
+        <div class="sig-cell" style="border-color:var(--border2)"><div class="k">Overall rating</div><div class="v" style="color:${pcol(r.continuation)}">${sigSign(r.signal)} · ${sgn(r.continuation)}</div></div>
+        <div class="sig-cell"><div class="k">Confidence</div><div class="v">${r.confidence}%</div></div>
+      </div>
+      <div class="sig-note">The rating combines this week's <b>news</b>, the stock's <b>price momentum</b>, <b>Wall-Street analyst</b> consensus (from Finviz), and its <b>SEC filings</b> — weighted 30 / 30 / 25 / 15. It's a sentiment-and-data blend, not a guaranteed forecast. Educational only — not financial advice.</div>
     </div>
     <div class="sig-pane" id="sig-pane-reasoning" style="display:none">
       ${sigReasoning(r).map(p => `<p style="font-size:.8rem;line-height:1.6;color:var(--text2);margin-bottom:10px">${esc(p)}</p>`).join('')}
       <div class="sig-note">This explanation is generated from the numbers on this page — the same reports-plus-news blend, in plain English. Educational only, not financial advice.</div>
     </div>
+    <div class="sig-pane" id="sig-pane-verify" style="display:none">
+      <div class="fund-meta">Loading independent check…</div>
+    </div>
     <div class="sig-pane" id="sig-pane-timeline" style="display:none">
       <div class="fund-meta">Loading timeline…</div>
     </div>
     <div class="sig-pane" id="sig-pane-filings" style="display:none">${filings}</div>
-    <div class="sig-pane" id="sig-pane-view" style="display:none">
+    <div class="sig-pane" id="sig-pane-view">
       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:8px">
         <span style="font-family:var(--mono);font-weight:700;font-size:.95rem">${esc(r.ticker)}</span>
         <span style="font-size:.62rem;color:var(--muted)">DAILY · LAST 45 SESSIONS</span>
@@ -2353,6 +2565,9 @@ function renderSigDetail() {
       <div style="font-size:.58rem;color:var(--muted);margin-top:2px">▲ all-time price (sparkline)</div>
       <div class="sig-note" id="sig-watch-note"></div>
     </div>`;
+
+  // Chart is the default open tab, so load it right away for the new stock
+  loadSigView();
 }
 
 /* ── Candlestick chart — pure SVG, no chart library ─────────────────────────── */
@@ -2653,7 +2868,7 @@ function renderStrip() {
     const t = r.title.length > 80 ? r.title.slice(0, 80) + '…' : r.title;
     const sev = r.rank <= 3 ? '<span class="strip-sev hi">HIGH IMPACT</span>'
               : r.rank <= 8 ? '<span class="strip-sev med">MEDIUM</span>' : '';
-    return `<a class="strip-chip" href="${esc(r.url || '#')}" target="_blank" rel="noopener">
+    return `<a class="strip-chip" href="${safeUrl(r.url)}" target="_blank" rel="noopener">
       <span class="dot" style="background:${c}"></span>${sev}${esc(t)}</a>`;
   };
   const html = rows.map(chip).join('');
@@ -2774,9 +2989,9 @@ function renderArticles(rows) {
       <span class="news-rank">#${r.rank}</span>
       <span class="news-sent ${sentBadge(r.label)}">${sentLabel(r.label)}</span>
       <div class="news-main">
-        <div class="news-headline">${r.title.replace(/</g,'&lt;')}</div>
+        <div class="news-headline">${esc(r.title)}</div>
         <div class="news-sub">
-          <span class="src-chip">${fav(r)}${(r.source_label||'').replace(/</g,'&lt;')}</span>
+          <span class="src-chip">${fav(r)}${esc(r.source_label)}</span>
           <span class="news-time">${r.published}</span>
           ${tickChips}
         </div>
@@ -2849,7 +3064,7 @@ function renderTickers(tickers) {
         </div>
       </td>
       <td><span class="trust-val" style="color:${tc}">${t.avg_trust}×</span></td>
-      <td class="headline-cell">${hl.replace(/</g,'&lt;')}</td>
+      <td class="headline-cell">${esc(hl)}</td>
       <td><span class="src-chip">${t.top_source||''}</span></td>
       <td class="time-cell">${t.last_updated}</td>
     </tr>`;
@@ -2925,9 +3140,9 @@ async function openArticleModal(idx) {
   placeholder.style.display = 'flex';
   placeholder.innerHTML = r.source_favicon
     ? `<img class="logo" src="${r.source_favicon}" alt="" onerror="this.style.display='none'">
-       <div class="modal-img-src-label">${r.source_label}</div>`
+       <div class="modal-img-src-label">${esc(r.source_label)}</div>`
     : `<span style="font-size:2rem;opacity:.3">📰</span>
-       <div class="modal-img-src-label">${r.source_label}</div>`;
+       <div class="modal-img-src-label">${esc(r.source_label)}</div>`;
 
   if (r.image_url) {
     // Stored image — use it directly
@@ -2948,7 +3163,7 @@ async function openArticleModal(idx) {
         articleImg.onload  = () => { articleImg.style.display='block'; placeholder.style.display='none'; };
         articleImg.onerror = () => {
           placeholder.innerHTML = r.source_favicon
-            ? `<img class="logo" src="${r.source_favicon}" alt=""><div class="modal-img-src-label">${r.source_label}</div>`
+            ? `<img class="logo" src="${r.source_favicon}" alt=""><div class="modal-img-src-label">${esc(r.source_label)}</div>`
             : `<span style="font-size:2rem;opacity:.3">📰</span>`;
           placeholder.style.display='flex';
         };
@@ -2956,12 +3171,12 @@ async function openArticleModal(idx) {
         r.image_url = imgUrl;  // cache for next open
       } else {
         placeholder.innerHTML = r.source_favicon
-          ? `<img class="logo" src="${r.source_favicon}" alt="" onerror="this.style.display='none'"><div class="modal-img-src-label">${r.source_label}</div>`
-          : `<span style="font-size:2rem;opacity:.3">📰</span><div class="modal-img-src-label">${r.source_label}</div>`;
+          ? `<img class="logo" src="${r.source_favicon}" alt="" onerror="this.style.display='none'"><div class="modal-img-src-label">${esc(r.source_label)}</div>`
+          : `<span style="font-size:2rem;opacity:.3">📰</span><div class="modal-img-src-label">${esc(r.source_label)}</div>`;
       }
     } catch(_) {
       placeholder.innerHTML = r.source_favicon
-        ? `<img class="logo" src="${r.source_favicon}" alt=""><div class="modal-img-src-label">${r.source_label}</div>`
+        ? `<img class="logo" src="${r.source_favicon}" alt=""><div class="modal-img-src-label">${esc(r.source_label)}</div>`
         : `<span style="font-size:2rem;opacity:.3">📰</span>`;
     }
   }
@@ -2981,7 +3196,7 @@ async function openArticleModal(idx) {
     ? `<img src="${r.source_favicon}" style="width:12px;height:12px;border-radius:2px;object-fit:contain" onerror="this.style.display='none'" alt="">`
     : '';
   document.getElementById('m-tags').innerHTML = [
-    `<span class="src-chip">${fav}${(r.source_label||'').replace(/</g,'&lt;')}</span>`,
+    `<span class="src-chip">${fav}${esc(r.source_label)}</span>`,
     `<span class="tier-badge ${r.tier===1?'t1':'t2'}">Tier ${r.tier}</span>`,
     `<span class="method-chip ${r.method==='FinBERT'?'m-finbert':'m-vader'}">${r.method}</span>`,
     `<span style="font-size:.68rem;color:var(--muted)">Scored ${r.scored_at}</span>`,
@@ -3113,6 +3328,122 @@ document.addEventListener('keydown', e => {
 });
 
 /* ════════════════════════════════════════════════════════════════════════════
+   CHAT GROUNDING — hand the model the numbers already on screen
+   The browser holds every figure the dashboard shows, so rather than have the
+   backend re-query anything we ship a plain-text snapshot of the stock in view.
+   The wording mirrors _stock_context() in app.py so both backends read alike.
+════════════════════════════════════════════════════════════════════════════ */
+const CHAT_CTX_MAX = 12000;
+
+/* Uppercase words people actually type that would otherwise collide with real
+   tickers (IT, ON, SO and friends are all listed companies). */
+const CTX_STOPWORDS = new Set(['BUY','SELL','HOLD','AI','CEO','CFO','SEC','ETF',
+  'IPO','USA','US','IT','ON','OR','AND','THE','ALL','NEW','EPS','PE','YOY','Q1',
+  'Q2','Q3','Q4','NYSE','OK','SO','A','I','MY','ITS','WHY','HOW','IS']);
+
+function tickersInText(text) {
+  const known = new Set(_sigData.map(r => r.ticker));
+  const out = [];
+  const add = sym => {
+    if (known.has(sym) && !CTX_STOPWORDS.has(sym) && !out.includes(sym)) out.push(sym);
+  };
+  const s = String(text || '');
+  // $AAPL always wins — an explicit cashtag is never ambiguous
+  for (const m of s.matchAll(/\$([A-Za-z]{1,5})\b/g)) add(m[1].toUpperCase());
+  for (const m of s.matchAll(/\b[A-Z]{2,5}\b/g))      add(m[0]);
+  return out;
+}
+
+/* Up to `n` recent headlines the pipeline tagged with this ticker */
+function ctxHeadlines(sym, n) {
+  return (articleData || []).filter(a => {
+    const tags = String(a.tickers || '').toUpperCase().split(/[^A-Z]+/);
+    return tags.includes(sym);
+  }).slice(0, n);
+}
+
+function stockBlock(sym) {
+  const r = (_sigData || []).find(x => x.ticker === sym);
+  if (!r) return '';
+  const pct = v => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v + '%';
+
+  const L = [`=== STOCK DATA FOR ${sym} (this is what the dashboard shows) ===`];
+  L.push(`Our rating: ${r.signal} (${r.confidence}% confidence, ${r.uncertainty}% uncertainty).`);
+  L.push(`Sector: ${r.sector || 'not classified'}.`);
+  L.push(`Overall rating signal (blended): ${sgn(r.continuation)} — reads as `
+       + `"${r.continuation_label || r.verdict || 'Stable'}".`);
+  L.push(`News signal (this week): ${sgn(r.news_score)} from ${r.article_count || 0} articles `
+       + `(${r.bull_pct || 0}% bullish, ${r.bear_pct || 0}% bearish).`);
+  L.push(`SEC filings: ${r.filing_total || 0} on record.`);
+  L.push('The rating = 30% weekly news + 30% price momentum + 25% analyst consensus + 15% SEC-filing trajectory (missing parts drop out and the rest are reweighted).');
+
+  if (r.return_1y != null || r.return_5y != null) {
+    const ath = r.pct_from_ath == null ? ''
+      : r.pct_from_ath === 0 ? ', currently at its all-time high'
+      : `, currently ${Math.abs(r.pct_from_ath)}% below its all-time high`;
+    const vol = r.volatility == null ? '' :
+      `, volatility ${r.volatility}% a year (${r.volatility >= 45 ? 'high — it swings a lot'
+        : r.volatility < 25 ? 'relatively steady' : 'moderate'})`;
+    L.push(`Price record: 1-year ${pct(r.return_1y)}, 5-year ${pct(r.return_5y)}${ath}${vol}.`);
+  }
+  if (r.event_types && r.event_types.length)
+    L.push(`Recent event types detected: ${r.event_types.join(', ')}.`);
+  if (r.headline)
+    L.push(`Top headline driving it: "${r.headline}" (${r.headline_source || 'unknown source'}).`);
+
+  const fs = (r.filings || []).slice(0, 3);
+  if (fs.length) {
+    L.push('Recent SEC filings we scored:');
+    for (const f of fs) {
+      const summary = f.summary ? `: ${String(f.summary).slice(0, 240)}` : '';
+      L.push(`  - ${f.form} filed ${f.filed} — reads as "${f.verdict}" `
+           + `(score ${sgn(f.score)})${summary}`);
+    }
+  }
+
+  const news = ctxHeadlines(sym, 5);
+  if (news.length) {
+    L.push(`Recent news about ${sym}:`);
+    for (const a of news)
+      L.push(`  - [${a.label}] ${a.title} (${a.source_label})`);
+  }
+  return L.join('\n');
+}
+
+/* Market-wide mood, so "what's the mood today?" works even with no stock open */
+function marketBlock() {
+  const rows = articleData || [];
+  if (!rows.length) return '';
+  const bull = rows.filter(a => a.label === 'positive').length;
+  const bear = rows.filter(a => a.label === 'negative').length;
+  const mood = bull > bear * 1.2 ? 'mostly bullish (optimistic)'
+             : bear > bull * 1.2 ? 'mostly bearish (pessimistic)' : 'roughly neutral';
+  const top = (_sigData || []).slice(0, 6)
+    .map(r => `${r.ticker} (${r.signal}, ${r.confidence}% confidence)`).join(', ');
+  const L = [`Overall mood right now: ${mood}.`,
+             `Articles analyzed: ${rows.length} (${bull} bullish, ${bear} bearish).`];
+  if (top) L.push(`Top-ranked stocks right now: ${top}.`);
+  return L.join('\n');
+}
+
+/* Which stock is the question about? What they typed wins; otherwise whatever
+   they have open; otherwise the last stock this conversation talked about. */
+function buildChatContext(question, history) {
+  let syms = tickersInText(question);
+  if (!syms.length && _sigSel) syms = [_sigSel];
+  if (!syms.length) {
+    for (let i = (history || []).length - 1; i >= 0 && !syms.length; i--)
+      syms = tickersInText(history[i].content);
+  }
+  const parts = [marketBlock()];
+  for (const s of syms.slice(0, 2)) {
+    const b = stockBlock(s);
+    if (b) parts.push(b);
+  }
+  return parts.filter(Boolean).join('\n\n').slice(0, CHAT_CTX_MAX);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
    CHAT WIDGETS — Sentiment Buddy (AI tutor, left) + Customer Care (support, right)
    One factory drives both; each keeps its own history, busy flag and DOM ids.
 ════════════════════════════════════════════════════════════════════════════ */
@@ -3188,7 +3519,11 @@ function makeChat(opts) {
         const resp = await fetch('/api/chat', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({messages: history, mode: opts.mode}),
+          // Ship the stock currently open plus its numbers, so "is this a good
+          // buy?" and follow-ups resolve against real data instead of the prompt
+          body: JSON.stringify({messages: history, mode: opts.mode,
+                                ticker: (typeof _sigSel !== 'undefined' ? _sigSel : '') || '',
+                                context: buildChatContext(text, history)}),
         });
         const data = await resp.json();
         hideTyping();

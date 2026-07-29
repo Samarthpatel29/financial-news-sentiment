@@ -1,8 +1,19 @@
 """
 SentimentScorer: FinBERT primary, VADER fallback.
 
-Rank formula (v2):
-    rank_score = |sentiment_score| × message_density × trust_weight × time_weight
+Rank formula (v3):
+    rank_score = |sentiment_score| × message_density × trust_weight
+
+Time decay is NOT stored in rank_score — it is applied at read time by the
+dashboard and the aggregator, so a score keeps decaying as the article ages
+instead of being frozen at the moment it was scored. `time_weight` is still
+recorded on the row for reference/analysis.
+
+sentiment_score = FinBERT P(positive) - P(negative), continuous in [-1, 1]
+                  (VADER compound when FinBERT is below FINBERT_MIN_CONF)
+
+message_density = this source's share of the window, normalised to (0, 1] so
+                  rank_score stays bounded and comparable across cycles
 
 trust_weight = 1.0  for Tier-1 sources (Reuters, Dow Jones, SEC, FDA)
              = 0.75 for everything else
@@ -10,6 +21,8 @@ trust_weight = 1.0  for Tier-1 sources (Reuters, Dow Jones, SEC, FDA)
 time_weight  = exp( -ln(2) / HALFLIFE_HOURS × hours_old )
                → article published NOW gets 1.0
                → 24-h-old article gets 0.5 (with default 24-h half-life)
+               (recorded on the row; applied live by readers, not baked into
+                rank_score — see above)
 """
 from __future__ import annotations
 import datetime
@@ -26,6 +39,7 @@ from src.storage.models import SentimentResult
 from src.sentiment.ticker_extractor import extract_tickers, tickers_to_str
 from .finbert import FinBERTScorer
 from .vader import score as vader_score
+from .llm_judge import score_headlines
 
 log = logging.getLogger(__name__)
 
@@ -65,37 +79,66 @@ class SentimentScorer:
         if not articles:
             return []
 
-        # message density = count of articles per source in this collection window
+        # Message density = share of the window contributed by this article's
+        # source, normalised to (0, 1]. The raw count was unusable as a rank
+        # factor: a source with 50k rows (StockTwits) gave every one of its
+        # posts a 10-50x multiplier over a CNBC story, so rank_score measured
+        # how chatty a source is rather than how important the news is. It was
+        # also unbounded, making scores incomparable across cycles.
         all_articles = window_articles or articles
         source_counts = Counter(a.source for a in all_articles)
+        max_count = max(source_counts.values()) if source_counts else 1
 
         texts = [f"{a.title}. {a.body}"[:512] for a in articles]
         finbert_results = self._finbert.score_batch(texts)
 
+        # Free-tier Groq LLM judge over the headlines — reads nuance FinBERT
+        # misses ("cuts costs" bullish vs "cuts guidance" bearish). Returns
+        # None per item when Groq is unavailable, so FinBERT/VADER still drive
+        # the fully-offline path. Attribution is title-based, so judge titles.
+        llm_results = score_headlines([a.title for a in articles])
+
         results: List[SentimentResult] = []
-        for article, fb, text in zip(articles, finbert_results, texts):
-            density = float(source_counts[article.source])
+        for article, fb, llm, text in zip(articles, finbert_results, llm_results, texts):
+            density = source_counts[article.source] / max_count
             tw      = _trust_weight(article.source)
             dw      = _time_weight(article.published)
 
+            # VADER is computed once for every article: it is stored as an
+            # independent second opinion, and reused as the fallback below.
+            vader_compound = vader_score(text).compound
+
+            # FinBERT fields are always recorded for reference/display when the
+            # model was confident, regardless of which engine drives the score.
             if fb is not None:
-                sentiment_score = fb.score * fb.confidence
-                finbert_label   = fb.label
-                finbert_score   = fb.score
-                finbert_conf    = fb.confidence
+                finbert_label = fb.label
+                finbert_score = fb.score
+                finbert_conf  = fb.confidence
             else:
-                # VADER fallback
-                vr = vader_score(text)
-                sentiment_score = vr.compound
-                finbert_label   = None
-                finbert_score   = None
-                finbert_conf    = None
+                finbert_label = finbert_score = finbert_conf = None
+
+            # Sentiment priority: LLM judge (nuance) → FinBERT → VADER. Sign is
+            # preserved; all three use the same [-1, 1] convention.
+            if llm is not None:
+                sentiment_score = llm["score"]
+                if finbert_label is None:
+                    finbert_label = llm["label"]   # give the UI a label to show
+            elif fb is not None:
+                # fb.score is already continuous polarity in [-1, 1]; it carries
+                # the model's confidence in its magnitude, so multiplying by
+                # fb.confidence again would double-count it.
+                sentiment_score = fb.score
+            else:
+                # VADER fallback (FinBERT below FINBERT_MIN_CONF or errored)
+                sentiment_score = vader_compound
                 log.debug("VADER fallback for: %s", article.title[:60])
 
-            vr_full        = vader_score(text)
-            vader_compound = vr_full.compound
-
-            rank_score = abs(sentiment_score) * density * tw * dw
+            # rank_score is the *undecayed* base. Time decay is applied when the
+            # score is read (dashboard `_ranked_rows`, aggregator
+            # `_live_time_weight`) so it keeps decaying as the article ages.
+            # Baking dw in here meant the readers multiplied by decay a second
+            # time — an article scored 12h after publication was decayed twice.
+            rank_score = abs(sentiment_score) * density * tw
 
             # Extract tickers from title (fast, no body needed)
             tickers = extract_tickers(article.title)

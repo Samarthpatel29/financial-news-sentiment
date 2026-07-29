@@ -263,26 +263,95 @@ def _price_score(stats: dict) -> float:
     r5 = stats.get("return_5y")
     from_ath = stats.get("pct_from_ath")   # 0 at peak, negative below
 
-    m1 = clamp((r1 or 0) / 40.0)                       # +40% in 1y  → +1
-    m5 = clamp((r5 or 0) / 150.0)                      # +150% in 5y → +1
-    near = clamp(1.0 + (from_ath or -100) / 30.0)      # at ATH → +1, 30% below → 0
-    return round(0.4 * m1 + 0.4 * m5 + 0.2 * near, 4)
+    # Only include the components we actually have, and renormalize over them.
+    # NOTE: `from_ath` must be checked for None explicitly — 0.0 means "sitting
+    # at the all-time high" (very bullish), but `from_ath or -100` treated that
+    # (and any missing value) as −100%, forcing near = −1 and dragging a healthy
+    # stock's score down for no reason.
+    parts = []
+    if r1 is not None:
+        parts.append((clamp(r1 / 40.0), 0.4))               # +40% in 1y  → +1
+    if r5 is not None:
+        parts.append((clamp(r5 / 150.0), 0.4))              # +150% in 5y → +1
+    if from_ath is not None:
+        parts.append((clamp(1.0 + from_ath / 30.0), 0.2))   # at ATH → +1, 30% below → 0
+    if not parts:
+        return 0.0
+    num = sum(v * w for v, w in parts)
+    den = sum(w for _, w in parts)
+    return round(num / den, 4)
+
+
+def _reports_signal(fs: list[Filing]) -> float:
+    """
+    Company-report component. Prefer the Groq verdicts (Improving/Stable/
+    Deteriorating) because FinBERT reads dry filing text as neutral and
+    flatlines. Newer filings weighted more; falls back to the FinBERT
+    trajectory when no verdicts exist yet.
+    """
+    V = {"Improving": 1.0, "Stable": 0.0, "Deteriorating": -1.0}
+    verds = [(f.filed_at, V[f.llm_verdict]) for f in fs
+             if f.llm_verdict in V and f.filed_at]
+    if verds:
+        verds.sort(key=lambda x: x[0])
+        n = len(verds)
+        num = sum(v * ((i + 1) / n) for i, (_, v) in enumerate(verds))
+        den = sum((i + 1) / n for i in range(n))
+        return num / den if den else 0.0
+    traj, level = _report_trajectory(fs)
+    return 0.6 * traj + 0.4 * level
+
+
+def _analyst_signal(recom: float | None) -> float | None:
+    """Finviz analyst consensus 1..5 (1=Strong Buy, 5=Strong Sell) → +1..-1."""
+    if recom is None:
+        return None
+    return max(-1.0, min(1.0, (3.0 - recom) / 2.0))
+
+
+# Give up on Finviz for the rest of a cycle after repeated failures (it's
+# blocking us) so aggregation never stalls; analysts just drop from the blend.
+_finviz_fails = {"n": 0}
+
+
+def _fetch_recom(ticker: str) -> float | None:
+    if _finviz_fails["n"] >= 4:
+        return None
+    try:
+        from src.collectors.finviz_verify import verify
+        data = verify(ticker)
+        if data and data.get("recom") is not None:
+            _finviz_fails["n"] = 0
+            return data["recom"]
+        _finviz_fails["n"] += 1
+    except Exception:
+        _finviz_fails["n"] += 1
+    return None
 
 
 def _continuation_label(score: float) -> str:
-    if score > 0.35:  return "Strong Uptrend"
-    if score > 0.10:  return "Building"
-    if score < -0.10: return "Weak"
+    # Boundaries align with _signal_of (±0.12) so the word and the BUY/SELL/HOLD
+    # badge never disagree (0.11 used to read "Building" but "HOLD"). Symmetric
+    # so a strong downtrend is named as clearly as a strong uptrend.
+    if score >  0.35:  return "Strong Uptrend"
+    if score >  0.12:  return "Building"
+    if score < -0.35:  return "Strong Downtrend"
+    if score < -0.12:  return "Weak"
     return "Mixed"
 
 
 def _aggregate(db: Session) -> None:
     """
-    The prediction: which stocks look likely to IMPROVE, from
-      - the company's report history for ALL TIME (10-K/10-Q trajectory + level)
-      - financial news for the week (7-day composite)
-    All scoring is local (FinBERT) — zero external AI calls required.
-    Price stats are attached for display only, not the prediction.
+    The prediction: which stocks look likely to IMPROVE, blended from four
+    components (each -1..1, missing ones drop out and the rest renormalize):
+      - news      (30%) — this week's financial-news sentiment (7-day composite)
+      - momentum  (30%) — long-term price trend (1y/5y returns, distance from ATH)
+      - analysts  (25%) — Finviz consensus recommendation
+      - reports   (15%) — the company's SEC-filing trajectory (10-K/10-Q/8-K)
+    Local scoring (FinBERT) needs zero external AI calls; the optional Groq LLM
+    judge only sharpens per-headline nuance when a free key is present. Price
+    momentum is part of the prediction (not display-only) so a stock that has
+    actually risen isn't rated SELL off a single bad news week.
     """
     from src.collectors.price_history import get_price_stats
 
@@ -310,26 +379,56 @@ def _aggregate(db: Session) -> None:
         ts.filing_count_7d = len(recent_fs) if recent_fs else (1 if fs else 0)
         ts.last_filing_at  = max((f.filed_at for f in fs if f.filed_at), default=None)
 
-        # ── All-time report signal ─────────────────────────────────────────────
-        trajectory, level = _report_trajectory(fs)
-        reports_signal = 0.6 * trajectory + 0.4 * level
-
-        # ── Weekly news signal ─────────────────────────────────────────────────
-        news = ts.composite_score or 0.0
-
-        # ── Prediction: reports (all-time) 60% + news (week) 40% ──────────────
-        pred = 0.6 * reports_signal + 0.4 * news
-        ts.continuation_score = round(pred, 4)
-        ts.continuation_label = _continuation_label(pred)
-
-        # Price record attached for display/cross-checking only
+        # ── Four real components, each -1..1 (missing ones drop out) ───────────
+        # 1) News (this week's financial-news sentiment)
+        news = ts.composite_score
+        # 2) Reports (company's SEC filings — Groq verdicts, which actually move,
+        #    with a FinBERT-trajectory fallback)
+        reports = _reports_signal(fs)
+        # 3) Price momentum (is the stock actually trending up? — this is what was
+        #    missing before, why a +70% stock could read SELL)
         pstats = get_price_stats(ticker)
+        momentum = _price_score(pstats) if pstats else None
         if pstats:
-            ts.price_score      = _price_score(pstats)
+            ts.price_score      = momentum
             ts.price_return_1y  = pstats.get("return_1y")
             ts.price_return_5y  = pstats.get("return_5y")
             ts.pct_from_ath     = pstats.get("pct_from_ath")
             ts.price_volatility = pstats.get("volatility")
+        # 4) Analyst consensus (Finviz Recom 1..5 → -1..1) so the rating lines up
+        #    with what Wall Street analysts say
+        recom = _fetch_recom(ticker)
+        analysts = _analyst_signal(recom)
+        ts.analyst_recom  = recom
+        ts.analyst_signal = analysts
+        ts.reports_signal  = round(reports, 4)
+        ts.momentum_signal = round(momentum, 4) if momentum is not None else None
+
+        # Weighted blend, renormalized over the components we actually have.
+        # News & momentum lead; analysts corroborate; reports (weakest signal,
+        # FinBERT flatlines on filings) contributes least.
+        parts = [(news, 0.30), (momentum, 0.30), (analysts, 0.25), (reports, 0.15)]
+        num = sum(v * w for v, w in parts if v is not None)
+        den = sum(w for v, w in parts if v is not None)
+        pred = num / den if den else 0.0
+
+        # Guardrail 1 — never emit a confident BUY/SELL from news text alone.
+        # Price momentum and analyst consensus are the "hard" corroborators for
+        # what the stock is actually doing. When BOTH are missing (free scrapers
+        # failed), the blend silently renormalized onto news + reports and a
+        # single bad news week produced SELL on a stock that had risen. Clamp
+        # into the HOLD band so the rating stays honest instead of guessing.
+        if momentum is None and analysts is None:
+            pred = max(-0.12, min(0.12, pred))
+
+        # Guardrail 2 — a stock in a clear multi-quarter uptrend must not read
+        # SELL off one rough news week. Floor to (at worst) HOLD when momentum
+        # is strongly positive. This is exactly the "+70% stock shown SELL" bug.
+        if momentum is not None and momentum >= 0.5:
+            pred = max(pred, -0.12)
+
+        ts.continuation_score = round(pred, 4)
+        ts.continuation_label = _continuation_label(pred)
     db.commit()
 
     _record_signals(db)
