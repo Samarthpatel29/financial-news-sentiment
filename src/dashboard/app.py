@@ -9,7 +9,10 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import Session
 
-from config.settings import DATABASE_URL, DASHBOARD_REFRESH, DASHBOARD_TOP_N
+from config.settings import (
+    DATABASE_URL, DASHBOARD_REFRESH, DASHBOARD_TOP_N,
+    TICKER_WINDOW_HOURS, MIN_ARTICLES_PER_TICKER, SOURCE_TRUST,
+)
 from config.sectors import sector_of as _sector_of
 from src.storage.models import SentimentResult, TickerSentiment, Base
 from src.utils.market_hours import market_status
@@ -22,7 +25,9 @@ app = Flask(__name__, template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 
-TIER1 = {"reuters", "dow_jones", "sec_edgar", "fda"}
+# Derived from the live trust table so the badge can't drift away from the
+# weighting again (it used to name Reuters/Dow Jones, which deliver nothing).
+TIER1 = {s for s, w in SOURCE_TRUST.items() if w >= 0.9}
 
 # Domain used to build favicon URL for each source
 SOURCE_DOMAINS = {
@@ -74,10 +79,16 @@ SOURCE_LABELS = {
 }
 
 
+# One engine for the process. It used to be built inside _make_session(), so
+# every single request created a new engine (and re-ran create_all), leaking a
+# connection pool per call. SQLAlchemy engines are thread-safe and pool
+# internally — sessions are the per-request part.
+_engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+Base.metadata.create_all(_engine)
+
+
 def _make_session() -> Session:
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    return Session(engine)
+    return Session(_engine)
 
 
 def _row_to_dict(r: SentimentResult, rank: int) -> dict:
@@ -121,13 +132,24 @@ def _ranked_rows(db: Session) -> list[dict]:
     # Only the freshness window — rank_score is frozen at scoring time, so
     # without this cutoff stale articles would dominate the board forever.
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=TICKER_WINDOW_HOURS)
+    # Pull a big pool so that, after keeping only stock-linked articles, we still
+    # fill the board. General market news ("Wall Street drifts…") is dropped.
     rows = (
         db.query(SentimentResult)
         .filter(SentimentResult.scored_at >= cutoff)
+        .filter(SentimentResult.tickers.isnot(None), SentimentResult.tickers != "")
         .order_by(desc(SentimentResult.rank_score))
-        .limit(DASHBOARD_TOP_N * 4)
+        .limit(DASHBOARD_TOP_N * 20)
         .all()
     )
+
+    # Keep only articles about a stock actually listed on the site
+    tracked = {t[0] for t in db.query(TickerSentiment.ticker).all()}
+    if tracked:
+        def _has_tracked(r: SentimentResult) -> bool:
+            return any(t.strip() in tracked for t in (r.tickers or "").split(",") if t.strip())
+        linked = [r for r in rows if _has_tracked(r)]
+        rows = linked or rows   # fall back to any-ticker rows if none match
 
     # Re-apply time decay live so newer articles outrank equally-scored old ones
     now = datetime.datetime.utcnow()
@@ -155,20 +177,42 @@ def _get_stats(db: Session) -> dict:
 
 
 def _ranked_tickers(db: Session) -> list[dict]:
-    """Return all TickerSentiment rows ordered by |composite_score| × article_count."""
-    rows = db.query(TickerSentiment).all()
-    if not rows:
+    """
+    Full tracked-stock board. Stocks with fresh news (>= MIN_ARTICLES_PER_TICKER
+    in the last TICKER_WINDOW_HOURS) are ranked on top by
+    |composite_score| × article_count × avg_trust, carrying their live sentiment.
+
+    Stocks WITHOUT fresh news are still shown — as neutral "No recent news" —
+    so the board never collapses to a handful when the market is closed
+    (overnight / weekends, when few articles publish). We deliberately do NOT
+    surface a quiet stock's last-known score: an old score served as current is
+    misleading (the reason the aggregator stopped doing exactly that), so quiet
+    rows read neutral until fresh coverage arrives.
+    """
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=TICKER_WINDOW_HOURS)
+    all_rows = db.query(TickerSentiment).all()
+    if not all_rows:
         return []
 
-    def _ticker_rank(t: TickerSentiment) -> float:
-        return abs(t.composite_score) * t.article_count * t.avg_trust
+    def _is_active(t: TickerSentiment) -> bool:
+        return ((t.article_count or 0) >= MIN_ARTICLES_PER_TICKER
+                and t.last_updated is not None
+                and t.last_updated >= cutoff)
 
-    rows_sorted = sorted(rows, key=_ticker_rank, reverse=True)
+    def _ticker_rank(t: TickerSentiment) -> float:
+        return abs(t.composite_score or 0.0) * (t.article_count or 0) * (t.avg_trust or 0.0)
+
+    active = sorted((t for t in all_rows if _is_active(t)), key=_ticker_rank, reverse=True)
+    quiet  = sorted((t for t in all_rows if not _is_active(t)), key=lambda t: t.ticker)
+    rows_sorted = list(active) + list(quiet)
 
     out = []
     for i, t in enumerate(rows_sorted, 1):
-        score = t.composite_score
-        if score > 0.05:
+        fresh = _is_active(t)
+        score = (t.composite_score or 0.0) if fresh else 0.0
+        if not fresh:
+            label = "neutral"
+        elif score > 0.05:
             label = "positive"
         elif score < -0.05:
             label = "negative"
@@ -179,15 +223,23 @@ def _ranked_tickers(db: Session) -> list[dict]:
             "ticker":         t.ticker,
             "composite_score": round(score, 4),
             "label":          label,
-            "article_count":  t.article_count,
-            "bullish_count":  t.bullish_count,
-            "bearish_count":  t.bearish_count,
-            "neutral_count":  t.neutral_count,
-            "avg_trust":      round(t.avg_trust, 2),
-            "top_headline":   t.top_headline or "—",
-            "top_source":     SOURCE_LABELS.get(t.top_source, (t.top_source or "").title()),
-            "top_url":        t.top_url or "#",
-            "last_updated":   t.last_updated.strftime("%H:%M:%S") if t.last_updated else "—",
+            # Lets the UI mute quiet stocks and label them "No recent news"
+            "has_recent_news": fresh,
+            "article_count":  t.article_count if fresh else 0,
+            "bullish_count":  t.bullish_count if fresh else 0,
+            "bearish_count":  t.bearish_count if fresh else 0,
+            "neutral_count":  t.neutral_count if fresh else 0,
+            "avg_trust":      round(t.avg_trust or 0.0, 2),
+            # Retail chatter, reported alongside but never mixed into the
+            # news composite above
+            "social_score":   round(t.social_score or 0.0, 4) if fresh else 0.0,
+            "social_count":   (t.social_count or 0) if fresh else 0,
+            "top_headline":   (t.top_headline or "—") if fresh else "No recent news",
+            "top_source":     SOURCE_LABELS.get(t.top_source, (t.top_source or "").title()) if fresh else "—",
+            "top_url":        (t.top_url or "#") if fresh else "#",
+            # Date included: a time-only stamp made a three-week-old row look
+            # like it had refreshed minutes ago.
+            "last_updated":   t.last_updated.strftime("%Y-%m-%d %H:%M") if t.last_updated else "—",
             "sector":         _sector_of(t.ticker),
         })
     return out
@@ -272,6 +324,12 @@ def _fundamental_rows(db: Session) -> list[dict]:
             "headline_url":       t.top_url or "",
             "news_score":         round(t.composite_score or 0.0, 3),
             "price_score":        round(t.price_score or 0.0, 3),
+            # ── The four components that now make up the rating ───────────────
+            "comp_news":          None if t.composite_score is None else round(t.composite_score, 3),
+            "comp_reports":       None if t.reports_signal is None else round(t.reports_signal, 3),
+            "comp_momentum":      None if t.momentum_signal is None else round(t.momentum_signal, 3),
+            "comp_analysts":      None if t.analyst_signal is None else round(t.analyst_signal, 3),
+            "analyst_recom":      t.analyst_recom,
             "return_1y":          t.price_return_1y,
             "return_5y":          t.price_return_5y,
             "pct_from_ath":       t.pct_from_ath,
@@ -420,6 +478,17 @@ def api_candles(ticker):
     return jsonify({"ticker": ticker.upper(), "candles": candles})
 
 
+@app.route("/api/verify/<ticker>")
+def api_verify(ticker):
+    """Independently cross-check our signal against Finviz (analysts + performance)."""
+    from src.collectors.finviz_verify import verify
+    our = request.args.get("signal", "")
+    data = verify(ticker, our)
+    if not data:
+        return jsonify({"error": "finviz unavailable", "ticker": ticker.upper()}), 404
+    return jsonify(data)
+
+
 def _chat_context(db: Session) -> str:
     """Compact live snapshot to ground the chatbot in real dashboard data."""
     stats   = _get_stats(db)
@@ -452,6 +521,93 @@ def _chat_context(db: Session) -> str:
     return "\n".join(lines)
 
 
+def _stock_context(db: Session, ticker: str) -> str:
+    """
+    Everything the dashboard knows about ONE stock, as plain text, so the
+    chatbot can answer specific questions ("why is JPM a buy?", "is NVDA
+    risky?") from the same numbers the user sees on screen.
+    """
+    from src.storage.models import Filing
+    sym = ticker.upper().lstrip("$")
+    ts = db.query(TickerSentiment).filter(TickerSentiment.ticker == sym).first()
+    if ts is None:
+        return ""
+
+    pred = ts.continuation_score or 0.0
+    signal = "BUY" if pred > 0.12 else "SELL" if pred < -0.12 else "HOLD"
+    n_arts = max(1, (ts.bullish_count or 0) + (ts.bearish_count or 0) + (ts.neutral_count or 0))
+    n_filings = db.query(Filing).filter(Filing.ticker == sym).count()
+    evidence = min(40, n_filings * 3) + min(25, n_arts * 2)
+    confidence = min(95, round(35 + evidence * 0.6 + abs(pred) * 30))
+
+    def _fmt(v):
+        return "n/a" if v is None else f"{v:+.3f}"
+
+    analyst_txt = "n/a"
+    if ts.analyst_signal is not None:
+        analyst_txt = f"{ts.analyst_signal:+.3f} (Finviz analyst consensus {ts.analyst_recom}/5, 1=Strong Buy … 5=Strong Sell)"
+
+    L = [
+        f"=== STOCK DATA FOR {sym} (this is what the dashboard shows) ===",
+        f"Our rating: {signal} (overall score {pred:+.3f}, "
+        f"{confidence}% confidence, {100 - confidence}% uncertainty).",
+        f"Sector: {_sector_of(sym)}.",
+        "The rating blends FOUR signals (each -1 bad to +1 good), weighted:",
+        f"  1. News this week (30%): {_fmt(ts.composite_score)} "
+        f"from {ts.article_count or 0} articles "
+        f"({ts.bullish_count or 0} bullish, {ts.bearish_count or 0} bearish, "
+        f"{ts.neutral_count or 0} neutral).",
+        f"  2. Price momentum (30%): {_fmt(ts.momentum_signal)} "
+        f"(1-year {ts.price_return_1y}%, 5-year {ts.price_return_5y}%).",
+        f"  3. Wall-Street analyst view (25%): {analyst_txt}.",
+        f"  4. SEC filings (15%): {_fmt(ts.reports_signal)} "
+        f"— latest filings read as \"{ts.fundamental_verdict or 'Stable'}\".",
+        "IMPORTANT: our BUY/SELL/HOLD is this blend of sentiment + market data, "
+        "NOT a guaranteed price forecast. A stock can be up a lot yet get HOLD/SELL "
+        "if its recent news is negative, and vice-versa. Explain it that way.",
+    ]
+    if ts.price_return_1y is not None or ts.price_return_5y is not None:
+        L.append(
+            f"Price record: 1-year {ts.price_return_1y}%, 5-year {ts.price_return_5y}%, "
+            f"currently {ts.pct_from_ath}% from its all-time high, "
+            f"volatility {ts.price_volatility}% a year "
+            f"({'high — it swings a lot' if (ts.price_volatility or 0) >= 45 else 'relatively steady' if (ts.price_volatility or 0) < 25 else 'moderate'})."
+        )
+    if ts.top_headline:
+        L.append(f"Top headline driving it: \"{ts.top_headline}\" "
+                 f"({SOURCE_LABELS.get(ts.top_source or '', ts.top_source or '')}).")
+
+    fs = (db.query(Filing).filter(Filing.ticker == sym)
+          .order_by(desc(Filing.filed_at)).limit(3).all())
+    if fs:
+        L.append("Recent SEC filings we scored:")
+        for f in fs:
+            when = f.filed_at.strftime("%b %d, %Y") if f.filed_at else "—"
+            L.append(f"  - {f.form_type} filed {when} (score {f.fundamental_score or 0:+.2f})"
+                     + (f": {f.llm_summary[:220]}" if f.llm_summary else ""))
+
+    week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+    arts = (db.query(SentimentResult)
+            .filter(SentimentResult.tickers.like(f"%{sym}%"),
+                    SentimentResult.published >= week_ago)
+            .order_by(desc(SentimentResult.rank_score)).limit(5).all())
+    if arts:
+        L.append(f"Recent news about {sym}:")
+        for a in arts:
+            lbl = ("bullish" if (a.sentiment_score or 0) > 0.05
+                   else "bearish" if (a.sentiment_score or 0) < -0.05 else "neutral")
+            L.append(f"  - [{lbl}] {a.title} ({SOURCE_LABELS.get(a.source, a.source)})")
+    return "\n".join(L)
+
+
+def _tickers_in_question(text: str, db: Session) -> list[str]:
+    """Which tracked stocks is the user asking about?"""
+    from src.sentiment.ticker_extractor import extract_tickers
+    found = extract_tickers(text or "", max_tickers=3)
+    tracked = {t[0] for t in db.query(TickerSentiment.ticker).all()}
+    return [t for t in found if t in tracked]
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     payload  = request.get_json(silent=True) or {}
@@ -468,9 +624,35 @@ def api_chat():
         for m in messages if m.get("content")
     ]
 
+    # The stock the user currently has open, sent by the dashboard
+    viewing = str(payload.get("ticker", "") or "").upper().lstrip("$")[:10]
+
     db = _make_session()
     try:
         context = _chat_context(db)
+
+        # Which stock(s) is this question about? Look at the latest user turn,
+        # and fall back to whatever they're viewing ("is this a good buy?").
+        last_user = next((m["content"] for m in reversed(clean)
+                          if m.get("role") == "user"), "")
+        syms = _tickers_in_question(last_user, db)
+        if not syms and viewing:
+            syms = [viewing]
+        # Also honour a stock named earlier in the conversation
+        if not syms:
+            for m in reversed(clean[:-1]):
+                syms = _tickers_in_question(m.get("content", ""), db)
+                if syms:
+                    break
+
+        blocks = [b for b in (_stock_context(db, s) for s in syms[:2]) if b]
+        if blocks:
+            context += ("\n\n" + "\n\n".join(blocks) +
+                        "\n\nAnswer the user's question using these exact numbers. "
+                        "Explain what they mean in plain English for a beginner. "
+                        "You may explain what the data shows and why the rating is "
+                        "what it is, but never tell them to buy or sell — remind them "
+                        "it's for learning, not financial advice.")
     finally:
         db.close()
 
@@ -482,25 +664,31 @@ def api_chat():
 def stream():
     def event_gen():
         db = _make_session()
-        while True:
-            try:
-                rows      = _ranked_rows(db)
-                tickers   = _ranked_tickers(db)
-                stats     = _get_stats(db)
-                narrative = _get_narrative()
-                db.expire_all()
-                payload = json.dumps({
-                    "data": rows,
-                    "tickers": tickers,
-                    "stats": stats,
-                    "narrative": narrative,
-                    "market": market_status(),
-                })
-                yield f"data: {payload}\n\n"
-            except Exception as exc:
-                log.warning("SSE error: %s", exc)
-                yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-            time.sleep(DASHBOARD_REFRESH)
+        # try/finally: without it the session (and its pooled connection) leaked
+        # every time a browser tab closed and the generator was torn down.
+        try:
+            while True:
+                try:
+                    rows      = _ranked_rows(db)
+                    tickers   = _ranked_tickers(db)
+                    stats     = _get_stats(db)
+                    narrative = _get_narrative()
+                    db.expire_all()
+                    payload = json.dumps({
+                        "data": rows,
+                        "tickers": tickers,
+                        "stats": stats,
+                        "narrative": narrative,
+                        "market": market_status(),
+                    })
+                    yield f"data: {payload}\n\n"
+                except Exception as exc:
+                    log.warning("SSE error: %s", exc)
+                    db.rollback()
+                    yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+                time.sleep(DASHBOARD_REFRESH)
+        finally:
+            db.close()
 
     return Response(
         stream_with_context(event_gen()),

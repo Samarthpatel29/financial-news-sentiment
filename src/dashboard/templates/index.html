@@ -2725,10 +2725,13 @@ function squarify(items, x, y, w, h, out) {
 
 function renderPulse() {
   const map = document.getElementById('pulse-map');
+  // Size by sqrt(article_count) so news-heavy stocks stay largest while quiet
+  // "no recent news" stocks (article_count 0) still get a visible tile — the
+  // board shows every tracked stock, not just the ones active right now.
   const rows = [...tickerData]
-    .map(t => ({sym: t.ticker, v: Math.max(1, t.article_count || 1), s: t.composite_score || 0}))
+    .map(t => ({sym: t.ticker, v: 2 + Math.sqrt(Math.max(0, t.article_count || 0)), s: t.composite_score || 0}))
     .sort((a, b) => b.v - a.v)
-    .slice(0, 60);
+    .slice(0, 120);
   document.getElementById('pulse-count').textContent = rows.length + ' tickers';
   if (!rows.length) { map.innerHTML = ''; return; }
   const W = map.clientWidth || 900, H = map.clientHeight || 480;
