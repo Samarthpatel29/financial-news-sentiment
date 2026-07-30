@@ -3,7 +3,12 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+# Anchor to the repo root: exclude the top-level local data/ (the 47 MB SQLite
+# DB + ML corpus) WITHOUT also matching public/data/. A bare "data/" matches a
+# dir named data at ANY depth, which silently dropped the static site's JSON
+# (signals/tickers/candles/price) from the deploy — the board fetched them and
+# got 404s, so the stock signals and charts came up empty on the live site.
+/data/
 src/
 config/
 tests/
