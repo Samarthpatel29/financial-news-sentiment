@@ -3336,7 +3336,7 @@ document.addEventListener('keydown', e => {
    backend re-query anything we ship a plain-text snapshot of the stock in view.
    The wording mirrors _stock_context() in app.py so both backends read alike.
 ════════════════════════════════════════════════════════════════════════════ */
-const CHAT_CTX_MAX = 12000;
+const CHAT_CTX_MAX = 16000;
 
 /* Uppercase words people actually type that would otherwise collide with real
    tickers (IT, ON, SO and friends are all listed companies). */
@@ -3429,8 +3429,27 @@ function marketBlock() {
   return L.join('\n');
 }
 
+/* A compact one-line summary of EVERY stock on the dashboard, so the bot can
+   answer "which stocks are BUY?", "list the tech ones", or compare any tickers
+   even when the user hasn't opened them. Detailed blocks (above) still carry the
+   depth for whatever stock the question is actually about. */
+function rosterBlock() {
+  const rows = _sigData || [];
+  if (!rows.length) return '';
+  const pct = v => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v + '%';
+  const L = [`=== ALL ${rows.length} STOCKS ON THE DASHBOARD `
+           + `(ticker: rating, confidence, sector, 1y return, news mix) ===`];
+  for (const r of rows) {
+    L.push(`${r.ticker}: ${r.signal} (${r.confidence || 0}% conf), `
+         + `${r.sector || 'unclassified'}, 1y ${pct(r.return_1y)}, `
+         + `news ${sgn(r.news_score)} (${r.bull_pct || 0}% bull/${r.bear_pct || 0}% bear)`);
+  }
+  return L.join('\n');
+}
+
 /* Which stock is the question about? What they typed wins; otherwise whatever
-   they have open; otherwise the last stock this conversation talked about. */
+   they have open; otherwise the last stock this conversation talked about.
+   The full roster is always included so any cross-stock question works too. */
 function buildChatContext(question, history) {
   let syms = tickersInText(question);
   if (!syms.length && _sigSel) syms = [_sigSel];
@@ -3438,11 +3457,15 @@ function buildChatContext(question, history) {
     for (let i = (history || []).length - 1; i >= 0 && !syms.length; i--)
       syms = tickersInText(history[i].content);
   }
-  const parts = [marketBlock()];
-  for (const s of syms.slice(0, 2)) {
+  // Detailed blocks first (most relevant, never truncated), then market mood,
+  // then the compact all-stocks roster to fill the remaining budget.
+  const parts = [];
+  for (const s of syms.slice(0, 3)) {
     const b = stockBlock(s);
     if (b) parts.push(b);
   }
+  parts.push(marketBlock());
+  parts.push(rosterBlock());
   return parts.filter(Boolean).join('\n\n').slice(0, CHAT_CTX_MAX);
 }
 
