@@ -339,18 +339,30 @@ def _fundamental_rows(db: Session) -> list[dict]:
 
 
 def _signal_accuracy(db: Session) -> dict:
-    """Honest self-score: % of graded signals (last 30d) that proved correct."""
+    """
+    Honest self-score on two long-term horizons: weekly (7-day check) and
+    monthly (30-day check). Each is the % of graded signals that proved right.
+    The monthly window is wider (rows are ≥30d old, so a 30-day lookback would
+    exclude them). Returns {"weekly": {...}, "monthly": {...}} plus a top-level
+    "pct"/"n" mirroring weekly for backward compatibility.
+    """
     from src.storage.models import SignalHistory
     import datetime as _dt
-    cutoff = _dt.datetime.utcnow() - _dt.timedelta(days=30)
-    scored = (db.query(SignalHistory)
-              .filter(SignalHistory.correct.isnot(None),
-                      SignalHistory.created_at >= cutoff)
-              .all())
-    if not scored:
-        return {"pct": None, "n": 0}
-    correct = sum(1 for s in scored if s.correct)
-    return {"pct": round(correct / len(scored) * 100), "n": len(scored)}
+    now = _dt.datetime.utcnow()
+
+    def _pct(field, since_days):
+        cutoff = now - _dt.timedelta(days=since_days)
+        rows = (db.query(SignalHistory)
+                .filter(field.isnot(None), SignalHistory.created_at >= cutoff)
+                .all())
+        if not rows:
+            return {"pct": None, "n": 0}
+        correct = sum(1 for r in rows if getattr(r, field.key))
+        return {"pct": round(correct / len(rows) * 100), "n": len(rows)}
+
+    weekly  = _pct(SignalHistory.correct, 45)
+    monthly = _pct(SignalHistory.correct_30d, 120)
+    return {"weekly": weekly, "monthly": monthly, **weekly}
 
 
 @app.route("/api/fundamentals")

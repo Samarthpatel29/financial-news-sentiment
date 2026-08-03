@@ -61,8 +61,13 @@ class TickerSentiment(Base):
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
     ticker          = Column(String(10), unique=True, nullable=False, index=True)
+    # Headline sentiment: reported news only, social chatter excluded
     composite_score = Column(Float, nullable=False)   # weighted-avg sentiment
-    article_count   = Column(Integer, default=0)
+    article_count   = Column(Integer, default=0)      # news articles only
+    # Retail chatter (StockTwits/Reddit), tracked separately so it can be shown
+    # without contaminating the news signal
+    social_score    = Column(Float, default=0.0)
+    social_count    = Column(Integer, default=0)
     bullish_count   = Column(Integer, default=0)
     bearish_count   = Column(Integer, default=0)
     neutral_count   = Column(Integer, default=0)
@@ -84,12 +89,20 @@ class TickerSentiment(Base):
     price_volatility    = Column(Float)                     # annualized %, for STABLE/VOLATILE tag
     continuation_score  = Column(Float, default=0.0)        # blended -1..1
     continuation_label  = Column(String(20), default="")    # Strong|Building|Mixed|Weak
+    # ── Real market cross-checks now folded INTO the score (not just display) ──
+    analyst_recom       = Column(Float)                     # Finviz consensus 1..5 (1=Strong Buy)
+    analyst_signal      = Column(Float)                     # mapped to -1..1
+    reports_signal      = Column(Float)                     # report component of the score
+    momentum_signal     = Column(Float)                     # price-momentum component
 
 
 class SignalHistory(Base):
     """
     Daily snapshot of each ticker's BUY/SELL/HOLD signal, scored against the
-    actual price 7 days later — powers the honest "model accuracy" stat.
+    actual price on TWO long-term horizons — weekly (7 days) and monthly
+    (30 days) — which powers the honest "model accuracy" stat. This is a
+    long-term investing tool, so both horizons matter (a monthly check is the
+    more meaningful one; the weekly check just fills in sooner).
     """
     __tablename__ = "signal_history"
 
@@ -99,10 +112,14 @@ class SignalHistory(Base):
     score           = Column(Float, default=0.0)             # continuation at signal time
     price_at_signal = Column(Float)
     created_at      = Column(DateTime, default=datetime.datetime.utcnow, index=True)
-    # outcome (filled ~7 days later)
+    # weekly outcome (filled ~7 days later)
     price_after     = Column(Float)
     pct_change      = Column(Float)
     correct         = Column(Integer)                        # 1 | 0 | NULL = not scored yet
+    # monthly outcome (filled ~30 days later)
+    price_after_30d = Column(Float)
+    pct_change_30d  = Column(Float)
+    correct_30d     = Column(Integer)                        # 1 | 0 | NULL = not scored yet
 
 
 class Filing(Base):
@@ -167,11 +184,31 @@ def init_db() -> Session:
             "price_volatility":    "REAL",
             "continuation_score":  "REAL DEFAULT 0.0",
             "continuation_label":  'TEXT DEFAULT ""',
+            "social_score":        "REAL DEFAULT 0.0",
+            "social_count":        "INTEGER DEFAULT 0",
+            "analyst_recom":       "REAL",
+            "analyst_signal":      "REAL",
+            "reports_signal":      "REAL",
+            "momentum_signal":     "REAL",
         }
         with engine.connect() as conn:
             for col, typedef in ts_cols.items():
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE ticker_sentiment ADD COLUMN {col} {typedef}"))
+            conn.commit()
+
+    # Additive migration for the monthly (30-day) outcome on signal_history
+    if inspector.has_table("signal_history"):
+        existing = {c["name"] for c in inspector.get_columns("signal_history")}
+        sh_cols = {
+            "price_after_30d": "REAL",
+            "pct_change_30d":  "REAL",
+            "correct_30d":     "INTEGER",
+        }
+        with engine.connect() as conn:
+            for col, typedef in sh_cols.items():
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE signal_history ADD COLUMN {col} {typedef}"))
             conn.commit()
 
     Base.metadata.create_all(engine)

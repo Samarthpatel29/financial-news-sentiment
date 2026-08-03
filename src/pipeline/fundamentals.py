@@ -464,30 +464,53 @@ def _record_signals(db: Session) -> None:
     db.commit()
 
 
+def _grade(signal: str, pct: float, up: float, hold_band: float) -> int:
+    """Was the call right? Thresholds scale with the horizon (bigger for monthly)."""
+    if signal == "BUY":
+        return 1 if pct > up else 0
+    if signal == "SELL":
+        return 1 if pct < -up else 0
+    return 1 if abs(pct) < hold_band else 0     # HOLD
+
+
 def _score_signals(db: Session) -> None:
-    """Grade signals that are ≥7 days old against what the price actually did."""
+    """
+    Grade past signals against what the price actually did, on two long-term
+    horizons: weekly (≥7 days old) and monthly (≥30 days old). Monthly uses
+    slightly wider thresholds because prices move more over a month.
+    """
     from src.collectors.price_history import get_price_stats
     from src.storage.models import SignalHistory
 
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
-    pending = (db.query(SignalHistory)
-               .filter(SignalHistory.correct.is_(None),
-                       SignalHistory.created_at <= cutoff,
-                       SignalHistory.price_at_signal.isnot(None))
-               .limit(60).all())
-    for s in pending:
+    now = datetime.datetime.utcnow()
+    week_cut  = now - datetime.timedelta(days=7)
+    month_cut = now - datetime.timedelta(days=30)
+
+    # Weekly grade — rows ≥7d old not yet weekly-scored.
+    for s in (db.query(SignalHistory)
+              .filter(SignalHistory.correct.is_(None),
+                      SignalHistory.created_at <= week_cut,
+                      SignalHistory.price_at_signal.isnot(None))
+              .limit(60).all()):
         pstats = get_price_stats(s.ticker)
-        if not pstats:
+        if not pstats or not s.price_at_signal:
             continue
         s.price_after = pstats["latest"]
-        s.pct_change = round((s.price_after / s.price_at_signal - 1.0) * 100, 2) \
-            if s.price_at_signal else None
-        if s.pct_change is None:
+        s.pct_change = round((s.price_after / s.price_at_signal - 1.0) * 100, 2)
+        s.correct = _grade(s.signal, s.pct_change, up=1.0, hold_band=3.0)
+
+    # Monthly grade — rows ≥30d old not yet monthly-scored (the meaningful
+    # long-term check). Wider thresholds: BUY >2%, SELL <-2%, HOLD |pct|<6%.
+    for s in (db.query(SignalHistory)
+              .filter(SignalHistory.correct_30d.is_(None),
+                      SignalHistory.created_at <= month_cut,
+                      SignalHistory.price_at_signal.isnot(None))
+              .limit(60).all()):
+        pstats = get_price_stats(s.ticker)
+        if not pstats or not s.price_at_signal:
             continue
-        if s.signal == "BUY":
-            s.correct = 1 if s.pct_change > 1.0 else 0
-        elif s.signal == "SELL":
-            s.correct = 1 if s.pct_change < -1.0 else 0
-        else:  # HOLD
-            s.correct = 1 if abs(s.pct_change) < 3.0 else 0
+        s.price_after_30d = pstats["latest"]
+        s.pct_change_30d = round((s.price_after_30d / s.price_at_signal - 1.0) * 100, 2)
+        s.correct_30d = _grade(s.signal, s.pct_change_30d, up=2.0, hold_band=6.0)
+
     db.commit()

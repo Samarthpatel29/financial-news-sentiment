@@ -1508,7 +1508,8 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
         <div class="section-head-main">
           <h2 class="section-title">Which stocks look set to improve?</h2>
           <p class="section-desc">
-            Every stock gets a <b>Buy</b>, <b>Sell</b>, or <b>Hold</b> rating that blends four signals:
+            A <b>long-term outlook</b> (weekly to monthly, not day-trading) — every stock gets a
+            <b>Buy</b>, <b>Sell</b>, or <b>Hold</b> rating that blends four signals:
             this week's <b>news</b>, its <b>price momentum</b>, <b>Wall-Street analyst</b> consensus, and its <b>SEC filings</b>.
             Open any stock's <b>Breakdown</b> tab to see all four.
             <span class="muted-note">A sentiment-and-data blend, for learning — not financial advice.</span>
@@ -2210,11 +2211,14 @@ async function loadFundamentals() {
     _sigData = data;
     document.getElementById('fund-count').textContent = data.length + ' signals';
 
-    // Honest self-score: how often past signals proved right after 7 days
+    // Honest self-score on two long-term horizons: weekly (7d) and monthly (30d).
     const acc = payload.accuracy || {};
+    const wk = acc.weekly || {pct: acc.pct, n: acc.n}, mo = acc.monthly || {};
+    const part = (label, o, firstAfter) =>
+      (o && o.pct != null) ? `${label} ${o.pct}% of ${o.n}`
+                           : `${label} collecting (first results after ~${firstAfter})`;
     document.getElementById('sig-accuracy').textContent =
-      acc.pct != null ? `model accuracy (7-day check): ${acc.pct}% of ${acc.n} signals`
-                      : 'accuracy self-check: collecting data (first results after 7 days)';
+      'accuracy — ' + part('weekly (7d):', wk, '1 week') + ' · ' + part('monthly (30d):', mo, '1 month');
 
     // Populate the sector filter from the data itself
     const sel = document.getElementById('sig-sector');
@@ -2538,7 +2542,7 @@ function renderSigDetail() {
         <div class="sig-cell" style="border-color:var(--border2)"><div class="k">Overall rating</div><div class="v" style="color:${pcol(r.continuation)}">${sigSign(r.signal)} · ${sgn(r.continuation)}</div></div>
         <div class="sig-cell"><div class="k">Confidence</div><div class="v">${r.confidence}%</div></div>
       </div>
-      <div class="sig-note">The rating combines this week's <b>news</b>, the stock's <b>price momentum</b>, <b>Wall-Street analyst</b> consensus (from Finviz), and its <b>SEC filings</b> — weighted 30 / 30 / 25 / 15. It's a sentiment-and-data blend, not a guaranteed forecast. Educational only — not financial advice.</div>
+      <div class="sig-note">A <b>long-term outlook</b> (weekly to monthly). The rating combines this week's <b>news</b>, the stock's <b>price momentum</b>, <b>Wall-Street analyst</b> consensus (from Finviz), and its <b>SEC filings</b> — weighted 30 / 30 / 25 / 15. It's a sentiment-and-data blend, not a guaranteed forecast. Educational only — not financial advice.</div>
     </div>
     <div class="sig-pane" id="sig-pane-reasoning" style="display:none">
       ${sigReasoning(r).map(p => `<p style="font-size:.8rem;line-height:1.6;color:var(--text2);margin-bottom:10px">${esc(p)}</p>`).join('')}
