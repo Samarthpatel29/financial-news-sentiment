@@ -59,9 +59,10 @@ _CANDLE_CACHE: dict[str, tuple[float, list]] = {}
 _CANDLE_TTL = 1800   # 30 min — daily candles barely move intraday
 
 
-def get_candles(ticker: str, days: int = 45) -> list[dict]:
+def get_candles(ticker: str, days: int = 520) -> list[dict]:
     """
-    Recent daily OHLC candles for the candlestick chart (free, via yfinance).
+    Daily OHLC candles for the candlestick chart (free, via yfinance). Pulls ~2
+    years so the chart can zoom across timeframes (1M/3M/6M/1Y/2Y) client-side.
     Returns [{d, o, h, l, c}, ...] oldest→newest, or [] on failure.
     """
     key = ticker.upper().lstrip("$")
@@ -70,7 +71,7 @@ def get_candles(ticker: str, days: int = 45) -> list[dict]:
         return _CANDLE_CACHE[key][1]
     try:
         import yfinance as yf
-        hist = yf.Ticker(key).history(period="3mo", interval="1d", auto_adjust=True)
+        hist = yf.Ticker(key).history(period="2y", interval="1d", auto_adjust=True)
     except Exception as exc:
         log.debug("yfinance candles failed [%s]: %s", key, exc)
         return []

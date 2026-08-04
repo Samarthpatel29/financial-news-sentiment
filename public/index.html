@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script>window.STATIC_MODE=true;window.GENERATED_AT="2026-08-04 14:27 UTC";</script>
+<script>window.STATIC_MODE=true;window.GENERATED_AT="2026-08-04 14:59 UTC";</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SentimentIQ · Financial Intelligence</title>
@@ -8325,8 +8325,15 @@ function renderSigDetail() {
     <div class="sig-pane" id="sig-pane-view">
       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:8px">
         <span style="font-family:var(--mono);font-weight:700;font-size:.95rem">${esc(r.ticker)}</span>
-        <span style="font-size:.62rem;color:var(--muted)">DAILY · LAST 45 SESSIONS</span>
+        <span id="sig-candle-range-lbl" style="font-size:.62rem;color:var(--muted)">DAILY · 3M</span>
         <span id="sig-candle-chg" style="font-family:var(--mono);font-size:.78rem;margin-left:auto"></span>
+      </div>
+      <div id="sig-tf-btns" style="display:flex;gap:6px;margin-bottom:8px">
+        <button type="button" class="filter-btn" onclick="setCandleRange(21,this)">1M</button>
+        <button type="button" class="filter-btn active" onclick="setCandleRange(63,this)">3M</button>
+        <button type="button" class="filter-btn" onclick="setCandleRange(126,this)">6M</button>
+        <button type="button" class="filter-btn" onclick="setCandleRange(252,this)">1Y</button>
+        <button type="button" class="filter-btn" onclick="setCandleRange(9999,this)">2Y</button>
       </div>
       <svg id="sig-candles" viewBox="0 0 760 250" preserveAspectRatio="none"
            style="width:100%;height:250px;background:var(--bg);border:1px solid var(--border);border-radius:8px"></svg>
@@ -8384,18 +8391,36 @@ function drawCandles(svgId, candles) {
   svg.innerHTML = out;
 }
 
+let _sigCandles = [];   // full ~2y daily series for the open stock; buttons slice it
+
+/* Zoom the candlestick chart to a timeframe. n = number of trading sessions
+   (>=9999 means "all we have", ~2 years). */
+function setCandleRange(n, btn) {
+  if (btn && btn.parentElement) {
+    btn.parentElement.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  const view = (n >= 9999) ? _sigCandles : _sigCandles.slice(-n);
+  drawCandles('sig-candles', view);
+  const lbl = document.getElementById('sig-candle-range-lbl');
+  if (lbl) lbl.textContent = 'DAILY · ' + (btn ? btn.textContent.trim() : `${view.length} sessions`);
+  const chg = document.getElementById('sig-candle-chg');
+  if (chg && view.length > 1) {
+    const pc = (view[view.length - 1].c / view[0].c - 1) * 100;
+    chg.textContent = `${pc >= 0 ? '▲ +' : '▼ '}${pc.toFixed(2)}% · ${view.length} sessions`;
+    chg.style.color = pc >= 0 ? 'var(--pos)' : 'var(--neg)';
+  }
+}
+
 async function loadSigCandles(ticker) {
   try {
     const resp = await fetch(`/api/candles/${encodeURIComponent(ticker)}`, {signal: AbortSignal.timeout(12000)});
     if (!resp.ok) throw new Error('no candles');
-    const candles = (await resp.json()).candles || [];
-    drawCandles('sig-candles', candles);
-    if (candles.length) {
-      const first = candles[0], last = candles[candles.length - 1];
-      const chg = (last.c / first.c - 1) * 100;
-      const el = document.getElementById('sig-candle-chg');
-      el.textContent = `${chg >= 0 ? '▲ +' : '▼ '}${chg.toFixed(2)}% over ${candles.length} sessions`;
-      el.style.color = chg >= 0 ? 'var(--pos)' : 'var(--neg)';
+    _sigCandles = (await resp.json()).candles || [];
+    if (_sigCandles.length) {
+      // Default view: 3M (matches the active button). Buttons re-slice live.
+      setCandleRange(63, document.querySelector('#sig-tf-btns .filter-btn.active'));
+      const last = _sigCandles[_sigCandles.length - 1];
       const cell = (k, v, c) => `<div class="sig-cell"><div class="k">${k}</div><div class="v" style="color:${c || 'var(--text)'}">${v}</div></div>`;
       document.getElementById('sig-ohlc').innerHTML =
         cell('Open', last.o) + cell('High', last.h, 'var(--pos)') +
