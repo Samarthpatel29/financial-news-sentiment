@@ -21,6 +21,13 @@ Live site: **https://financial-news-sentiment.vercel.app**
 
 **When you have any of these:** put the keys in `.env` (never in chat), tell me which one, and I'll wire it in.
 
+## Accuracy roadmap (evidence-based, no overfitting)
+Current: **~59% directional** (Buy 52% / Sell 62%), 7-day horizon. Realistic ceiling for free-data stock prediction is ~55–60% — anything >65% is a red flag for leakage/overfitting.
+- ✅ **Phase 1a — done:** asymmetric thresholds (Buy 0.25 / Sell 0.12) → 47%→59%.
+- ✅ **Phase 1b — done:** log the 4 signal components (news/momentum/analysts/filings) with every prediction (`SignalHistory.comp_*`). This is the foundation for real optimization.
+- ⏳ **Phase 2 (weeks out):** once components + outcomes accumulate, train a LightGBM meta-learner + isotonic calibration, validated with **purged walk-forward CV** (avoids leakage). This is the legitimate path past 60%.
+- 🔲 **Optional signals:** insider buying (SEC Form 4), options put/call ratio (yfinance), LLM event-type tagging — all free.
+
 ## Notes
 - **Groq free tier** = 100k tokens/day, resets daily. When it's used up, the LLM sentiment layer falls back to FinBERT automatically (no breakage).
 - **Real-time <1–2 min** is the **local live app** (`start.sh`); the Vercel link is the shareable snapshot (refreshes every ~2h).

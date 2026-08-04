@@ -461,6 +461,11 @@ def _record_signals(db: Session) -> None:
             signal=_signal_of(ts.continuation_score or 0.0),
             score=ts.continuation_score or 0.0,
             price_at_signal=(pstats or {}).get("latest"),
+            # ingredient signals — logged for later evidence-based re-weighting
+            comp_news=ts.composite_score,
+            comp_momentum=ts.momentum_signal,
+            comp_analysts=ts.analyst_signal,
+            comp_reports=ts.reports_signal,
         ))
     db.commit()
 

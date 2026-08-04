@@ -120,6 +120,12 @@ class SignalHistory(Base):
     price_after_30d = Column(Float)
     pct_change_30d  = Column(Float)
     correct_30d     = Column(Integer)                        # 1 | 0 | NULL = not scored yet
+    # the four ingredient signals at prediction time — logged so we can later
+    # train a meta-model / re-weight the blend on real outcomes (accuracy work)
+    comp_news       = Column(Float)                          # weekly news sentiment
+    comp_momentum   = Column(Float)                          # price momentum
+    comp_analysts   = Column(Float)                          # analyst consensus
+    comp_reports    = Column(Float)                          # SEC-filing trajectory
 
 
 class Filing(Base):
@@ -204,6 +210,10 @@ def init_db() -> Session:
             "price_after_30d": "REAL",
             "pct_change_30d":  "REAL",
             "correct_30d":     "INTEGER",
+            "comp_news":       "REAL",
+            "comp_momentum":   "REAL",
+            "comp_analysts":   "REAL",
+            "comp_reports":    "REAL",
         }
         with engine.connect() as conn:
             for col, typedef in sh_cols.items():
