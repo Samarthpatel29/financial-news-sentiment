@@ -1,20 +1,34 @@
+---
+title: SentimentIQ
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Financial News Sentiment Pipeline
 
 > IST 495 · Agentic AI Internship · Penn State · Summer 2026  
 > Student: Samarth Patel · Supervisor: Prof. Kaamran Raahemifar
 
-A real-time financial news sentiment analysis system that ingests headlines from 25+ free sources, scores them using FinBERT and VADER, ranks them by trust/time-decay weighted scores, and displays results on a live Bloomberg-style dashboard with a built-in AI tutor chatbot. The pipeline auto-fetches around the clock — every 60s in pre-market/after-hours, when overnight news matters most — so the board is always current before the market opens.
+A real-time financial news sentiment analysis system that ingests headlines from 15 free sources, scores them using FinBERT and VADER, ranks them by trust/time-decay weighted scores, and displays results on a live Bloomberg-style dashboard with a built-in AI tutor chatbot. The pipeline auto-fetches around the clock — every 60s in pre-market/after-hours, when overnight news matters most — so the board is always current before the market opens.
 
 ## Architecture
 
 ```
-RSS Feeds / Scrapers (17+ sources)
+RSS Feeds + StockTwits + SEC EDGAR (15 live sources)
         ↓
   Async Collector (aiohttp + feedparser + BeautifulSoup)
         ↓
-  FinBERT Scorer (primary) + VADER (fallback)
+  Dedup by URL *and* normalised headline (cross-source re-syndication)
+        ↓
+  FinBERT Scorer (primary) + VADER (fallback, finance-tuned lexicon)
+  sentiment = P(positive) − P(negative), continuous in [-1, 1]
         ↓
   Rank Score = |sentiment| × density × trust_weight × time_weight
+        (density normalised to (0,1] — a source's share of the window)
         ↓
   Ticker Extraction + Per-Ticker Aggregation
         ↓
@@ -24,14 +38,53 @@ RSS Feeds / Scrapers (17+ sources)
 ```
 
 ## Sources (all free, no paid API)
-Reuters · Dow Jones · CNBC · MarketWatch · PR Newswire · ACCESS Wires · FinanceWire · GlobeNewswire · Yahoo Finance · Seeking Alpha · TradingView · FinViz · SEC EDGAR · FDA · Nasdaq · Investing.com · Benzinga · Business Insider · CNN Business · Fortune · Google News · **StockTwits** (free social sentiment — the no-cost alternative to the paid X/Twitter API) · Reddit (r/stocks, r/wallstreetbets, r/investing)
+
+**News (10):** CNBC · MarketWatch · PR Newswire · GlobeNewswire · Seeking Alpha · Investing.com · Business Insider · Fortune · Google News · FDA press releases
+
+**Filings:** SEC EDGAR (10-K / 10-Q / 8-K, via `edgar_collector.py`)
+
+**Social (4):** **StockTwits** (free social sentiment — the no-cost alternative to the paid X/Twitter API) · Reddit (r/stocks, r/wallstreetbets, r/investing)
+
+> An audit on 2026-07-21 checked all configured feeds against 80k stored rows and
+> found eight that had never returned a single article (Reuters, Dow Jones,
+> Nasdaq, Yahoo Finance, ACCESS Wires, FinanceWire, Benzinga, CNN Business) plus
+> three scraper targets that were bot-blocked or pointed at a non-existent
+> endpoint (FinViz, TradingView, an SEC full-text URL). Those are parked in
+> `DEAD_FEEDS` / `DEAD_SCRAPERS` in `config/settings.py` rather than advertised.
+> StockTwits supplies roughly two-thirds of raw volume, so social content is
+> explicitly down-weighted (0.3–0.4x) against news outlets.
 
 ## Features
-- **Live card grid** — top-ranked news as image cards with sentiment badges, auto-refreshing via SSE
-- **Ticker heatmap** — stocks ranked by aggregated news + social sentiment
+- **AI Signals** — every tracked stock gets a **Buy / Sell / Hold** rating with a confidence % (see the prediction engine below)
+- **Per-stock detail** — candlestick chart, plain-English "why this rating", SEC reports with AI summaries, a four-signal breakdown, a **Finviz cross-check**, and an event timeline
+- **Sector Map** — sectors coloured by combined sentiment; click one to see its stocks and drivers
+- **Watchlist** — star stocks (saved in the browser, no account)
+- **News feed** — top-ranked headlines, each linked to the stock it's about (click → jump to that stock's signal)
 - **Market-hours engine** — faster polling in pre-market/after-hours, live OPEN/CLOSED badge
-- **AI Narrative** — Groq LLaMA 3.1 summarizes the market mood each cycle
-- **Sentiment Buddy chatbot** — a free beginner-friendly AI tutor that explains every concept and answers questions about the live data on screen
+- **AI Narrative** — Groq summarizes the market mood each cycle
+- **Sentiment Buddy chatbot** — a free beginner-friendly AI tutor, grounded in the live data, that can answer stock-specific questions ("why is JPM a hold?")
+
+## Prediction Engine (AI Signals)
+
+Each stock's **Buy / Sell / Hold** rating blends **four independent signals**, each on a −1 (bad) … +1 (good) scale. Weights renormalise if a signal is missing:
+
+| Signal | Weight | Source |
+|---|---|---|
+| 📰 **News** (this week) | 30% | FinBERT sentiment of the week's headlines |
+| 📈 **Price momentum** | 30% | 1-yr / 5-yr returns + distance from all-time high (yfinance) |
+| 👔 **Analyst consensus** | 25% | Finviz "Recom" (1=Strong Buy … 5=Strong Sell), mapped to −1…+1 |
+| 🏛️ **SEC filings** | 15% | Groq verdict (Improving/Stable/Deteriorating) on 10-K/10-Q/8-K |
+
+```
+rating = 0.30·news + 0.30·momentum + 0.25·analysts + 0.15·reports   (renormalised)
+Buy  if rating >  0.12   ·   Sell if rating < −0.12   ·   Hold otherwise
+```
+
+> **Design note (important for the integration team):** this is a *sentiment-and-data blend*, **not** a guaranteed price forecast. Earlier versions were ~100% short-term news sentiment, which produced misleading calls (e.g. "Sell" on a stock that was up 70%). Price momentum and analyst consensus were added on **2026-07-24** specifically so ratings line up with market reality and with the built-in Finviz cross-check. The reports signal is deliberately the *lowest* weight because FinBERT flatlines on dry filing text — Groq verdicts do the real work there.
+
+**Honest self-scoring:** every day the model's Buy/Sell/Hold calls are snapshotted and graded 7 days later against the actual price (`SignalHistory` table). The header shows the running accuracy (`accuracy self-check: N% of M signals`).
+
+**Independent verification:** the *Verify on Finviz* tab fetches live analyst data and reports **AGREE / MIXED / DISAGREE** vs our rating, so any prediction can be checked against an external source.
 
 ## Stack (100% free / open-source)
 - **Python 3.11** — all code
@@ -56,6 +109,23 @@ Or just run:
 ```bash
 bash start.sh
 ```
+
+First run downloads the FinBERT model (~440 MB) from HuggingFace; subsequent runs are cached. Optional: put a free `GROQ_API_KEY` in a `.env` file to enable the AI narrative, filing summaries, and chatbot (everything else works without it).
+
+## Public deployment (Vercel)
+
+The live ML stack is ~1.4 GB (PyTorch), far over Vercel's 250 MB serverless limit, so the public site is a **static snapshot**:
+
+```bash
+python export_static.py        # runs the pipeline locally, writes ./public/*.json
+vercel deploy --prod --yes     # deploys the 1.9 MB snapshot
+```
+
+- All scoring happens on your machine; Vercel just serves the JSON.
+- Two things stay **live** on the public site via tiny stdlib-only serverless functions: the **chatbot** (`api/chat.py` → Groq) and the **Finviz verify** check (`api/verify.py`).
+- Set `GROQ_API_KEY` (and optionally `ALLOWED_ORIGIN`) in the Vercel project settings.
+
+See **`docs/HANDOFF.md`** for the integration team's guide (file map, API reference, test status, known gaps, and next steps) and **`docs/DEMO_WALKTHROUGH.md`** for a screenshot walkthrough of the app.
 
 ## Project Timeline
 May 5 – Aug 15, 2026 (15 weeks · 250 hours)
