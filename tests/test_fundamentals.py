@@ -7,7 +7,7 @@ These lock in the fixes for "SELL on a stock that actually went up":
   * the four-signal blend no longer emits a confident BUY/SELL from news text
     alone when price momentum AND analyst consensus are both unavailable
   * a strong price uptrend floors the signal to at worst HOLD
-  * the continuation label and the BUY/SELL/HOLD signal share the same ±0.12
+  * the continuation label and the BUY/SELL/HOLD signal share the same asymmetric
     boundary, so the word and the badge never disagree
   * the Groq LLM judge degrades gracefully to FinBERT/VADER with no key
 """
@@ -64,9 +64,11 @@ class TestContinuationLabelMatchesSignal:
 
 class TestSignalOf:
     def test_thresholds(self):
-        assert _signal_of(0.13) == "BUY"
-        assert _signal_of(0.12) == "HOLD"       # boundary is strict
-        assert _signal_of(-0.12) == "HOLD"
+        # Asymmetric: BUY needs > 0.25 (backtested), SELL needs < -0.12.
+        assert _signal_of(0.30) == "BUY"
+        assert _signal_of(0.25) == "HOLD"       # BUY boundary is strict
+        assert _signal_of(0.20) == "HOLD"       # marginal buys are now HOLD
+        assert _signal_of(-0.12) == "HOLD"      # SELL boundary is strict
         assert _signal_of(-0.13) == "SELL"
 
 

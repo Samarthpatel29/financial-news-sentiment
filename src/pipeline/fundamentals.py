@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from config.settings import (
     GROQ_API_KEY, CREW_LLM_MODEL,
     USE_GROQ_SUMMARIES, REPORT_HISTORY_MAX_FILINGS,
+    SIGNAL_BUY_THRESHOLD, SIGNAL_SELL_THRESHOLD,
 )
 from src.collectors.edgar_collector import EdgarCollector, LOOKBACK_DAYS
 from src.collectors.edgar_extractor import extract_section
@@ -330,13 +331,12 @@ def _fetch_recom(ticker: str) -> float | None:
 
 
 def _continuation_label(score: float) -> str:
-    # Boundaries align with _signal_of (±0.12) so the word and the BUY/SELL/HOLD
-    # badge never disagree (0.11 used to read "Building" but "HOLD"). Symmetric
-    # so a strong downtrend is named as clearly as a strong uptrend.
-    if score >  0.35:  return "Strong Uptrend"
-    if score >  0.12:  return "Building"
-    if score < -0.35:  return "Strong Downtrend"
-    if score < -0.12:  return "Weak"
+    # Boundaries align with _signal_of (asymmetric: BUY bar higher than SELL) so
+    # the word and the BUY/SELL/HOLD badge never disagree.
+    if score >  0.35:                    return "Strong Uptrend"
+    if score >  SIGNAL_BUY_THRESHOLD:    return "Building"
+    if score < -0.35:                    return "Strong Downtrend"
+    if score < -SIGNAL_SELL_THRESHOLD:   return "Weak"
     return "Mixed"
 
 
@@ -437,7 +437,8 @@ def _aggregate(db: Session) -> None:
 
 # ── Honest self-scoring: log today's signals, grade them a week later ──────────
 def _signal_of(score: float) -> str:
-    return "BUY" if score > 0.12 else "SELL" if score < -0.12 else "HOLD"
+    return ("BUY"  if score >  SIGNAL_BUY_THRESHOLD  else
+            "SELL" if score < -SIGNAL_SELL_THRESHOLD else "HOLD")
 
 
 def _record_signals(db: Session) -> None:

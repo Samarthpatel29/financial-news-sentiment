@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from config.settings import (
     DATABASE_URL, DASHBOARD_REFRESH, DASHBOARD_TOP_N,
     TICKER_WINDOW_HOURS, MIN_ARTICLES_PER_TICKER, SOURCE_TRUST,
+    SIGNAL_BUY_THRESHOLD, SIGNAL_SELL_THRESHOLD,
 )
 from config.sectors import sector_of as _sector_of
 from src.storage.models import SentimentResult, TickerSentiment, Base
@@ -287,7 +288,8 @@ def _fundamental_rows(db: Session) -> list[dict]:
         confidence = min(95, round(35 + evidence * 0.6 + agreement))
 
         pred = t.continuation_score or 0.0
-        signal = "BUY" if pred > 0.12 else "SELL" if pred < -0.12 else "HOLD"
+        signal = ("BUY" if pred > SIGNAL_BUY_THRESHOLD
+                  else "SELL" if pred < -SIGNAL_SELL_THRESHOLD else "HOLD")
 
         # Event types driving this signal (from the filing kinds present)
         kinds = {f.section_kind for f in fs}
@@ -547,7 +549,8 @@ def _stock_context(db: Session, ticker: str) -> str:
         return ""
 
     pred = ts.continuation_score or 0.0
-    signal = "BUY" if pred > 0.12 else "SELL" if pred < -0.12 else "HOLD"
+    signal = ("BUY" if pred > SIGNAL_BUY_THRESHOLD
+              else "SELL" if pred < -SIGNAL_SELL_THRESHOLD else "HOLD")
     n_arts = max(1, (ts.bullish_count or 0) + (ts.bearish_count or 0) + (ts.neutral_count or 0))
     n_filings = db.query(Filing).filter(Filing.ticker == sym).count()
     evidence = min(40, n_filings * 3) + min(25, n_arts * 2)
