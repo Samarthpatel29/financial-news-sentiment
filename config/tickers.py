@@ -89,6 +89,53 @@ TICKER_UNIVERSE: set[str] = {
     "AYX","ALTERYX","CLDR","CDK","PRGS","MANH","NCNO","JAMF","PING",
 }
 
+# ── Symbols that are no longer tradable, or were never real tickers ───────────
+# Kept as an explicit subtraction (rather than deleted inline) so the reason for
+# each removal is documented and the list is easy to re-audit.
+_DELISTED: set[str] = {
+    # Acquired / merged away
+    "ATVI",   # Activision Blizzard -> Microsoft, Oct 2023
+    "SPLK",   # Splunk -> Cisco, Mar 2024
+    "PXD",    # Pioneer Natural Resources -> ExxonMobil, May 2024
+    "MAXR",   # Maxar -> Advent, May 2023
+    "COUP",   # Coupa -> Thoma Bravo, Feb 2023
+    "AVLR",   # Avalara -> Vista, Oct 2022
+    "ZEN",    # Zendesk -> Hellman & Friedman, Nov 2022
+    "CLDR",   # Cloudera -> KKR/CD&R, Oct 2021
+    "EMC",    # EMC -> Dell, 2016
+    "SWY",    # Safeway -> Albertsons, 2015
+    "AK",     # AK Steel -> Cleveland-Cliffs, 2020
+    "HEP",    # Holly Energy Partners -> HF Sinclair, 2023
+    "ANTM",   # renamed Elevance Health (ELV), 2022
+    "ABC",    # AmerisourceBergen renamed Cencora (COR), 2023
+    "PKI",    # PerkinElmer renamed Revvity (RVTY), 2023
+    "TWTR",   # Twitter taken private by Musk, 2022
+    "RAD",    # Rite Aid delisted after Chapter 11
+    "FSR",    # Fisker, Chapter 11 2024
+    "NKLA",   # Nikola, Chapter 11 2025
+    "WISH",   # ContextLogic, reverse-split/renamed
+    # Never valid tickers — company names or typos that leaked into the set
+    "ALTERYX", "PELOTON", "UNITY", "IDEANOMICS", "REXNORD", "PLEX", "CHICO",
+    "TRANE",  # real ticker is TT
+    "L3H",    # real ticker is LHX
+    "BDNCE",  # ByteDance is private
+    "AIRB",   # Airbnb is ABNB
+    "OVRLY", "OPSF", "SOLO", "OSS", "PC", "ESTE", "REV", "CEVA", "AMBC",
+}
+
+TICKER_UNIVERSE -= _DELISTED
+
+# ── Finviz screener CSV (brief: "a CSV file is extracted via an existing screener
+# on Finviz"). If an export is present, its tickers are ADDED to the universe so
+# the screener drives what we track. Absent → we keep the built-in universe.
+try:
+    from src.collectors.finviz_screener import load_screener_tickers
+    _screener_tickers = load_screener_tickers()
+    if _screener_tickers:
+        TICKER_UNIVERSE |= _screener_tickers
+except Exception:
+    pass
+
 # Words that look like tickers but should never match
 _STOPWORDS: set[str] = {
     "A","I","AN","AS","AT","BE","BY","DO","GO","HE","IF","IN","IS","IT",
@@ -291,4 +338,15 @@ COMPANY_TO_TICKER: dict[str, str] = {
     "nasdaq":           "QQQ",
     "dow jones":        "DIA",
     "russell 2000":     "IWM",
+}
+
+# Drop any company alias that now points at a delisted/invalid symbol
+COMPANY_TO_TICKER = {n: t for n, t in COMPANY_TO_TICKER.items() if t not in _DELISTED}
+
+# ── Aliases that are also ordinary English words ──────────────────────────────
+# A word-boundary match is not enough for these ("a snap decision", "visa
+# applications", "the intel suggests", "meta-analysis"). The extractor only
+# accepts them when they appear capitalised in the original headline.
+AMBIGUOUS_NAMES: set[str] = {
+    "meta", "snap", "visa", "intel", "unity", "fox", "lilly", "target corp",
 }

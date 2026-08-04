@@ -32,16 +32,26 @@ RSS_FEEDS = {
     "reddit_stocks":  "https://www.reddit.com/r/stocks/hot/.rss?limit=40",
     "reddit_wsb":     "https://www.reddit.com/r/wallstreetbets/hot/.rss?limit=40",
     "reddit_investing":"https://www.reddit.com/r/investing/hot/.rss?limit=40",
+    # Reputable wires the brief names, revived via Google News per-source search
+    # (their own RSS is paywalled/dead — see DEAD_FEEDS). These return their
+    # HEADLINES, which is all the sentiment scorer needs. Verified ~100 items/day.
+    "reuters":        "https://news.google.com/rss/search?q=site:reuters.com+when:24h&hl=en-US&gl=US&ceid=US:en",
+    "dow_jones":      "https://news.google.com/rss/search?q=site:wsj.com+when:24h&hl=en-US&gl=US&ceid=US:en",
+    "access_wire":    "https://news.google.com/rss/search?q=site:accessnewswire.com+when:48h&hl=en-US&gl=US&ceid=US:en",
+    "business_wire":  "https://news.google.com/rss/search?q=site:businesswire.com+when:24h&hl=en-US&gl=US&ceid=US:en",
 }
 
 # Feeds that returned nothing usable during the audit (2026-07-21). Re-test one
 # of these before moving it back into RSS_FEEDS.
 DEAD_FEEDS = {
-    "reuters":        "https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&hl=en-US&gl=US&ceid=US:en",
-    "dow_jones":      "https://www.wsj.com/xml/rss/3_7085.xml",
+    # reuters / dow_jones / access_wire were REVIVED (moved to RSS_FEEDS) using
+    # Google News per-source search (site:reuters.com etc.) instead of their own
+    # dead/paywalled RSS. The old broken URLs are kept here for the record:
+    #   reuters (old): allinurl:reuters.com returned nothing; site: works
+    #   dow_jones (old): https://www.wsj.com/xml/rss/3_7085.xml  (paywalled)
+    #   access_wire (old): https://www.accesswire.com/rss  (rebranded to accessnewswire)
     "nasdaq":         "https://news.google.com/rss/search?q=when:24h+allinurl:nasdaq.com&hl=en-US&gl=US&ceid=US:en",
     "yahoo_finance":  "https://finance.yahoo.com/rss/topstories",
-    "access_wires":   "https://www.accesswire.com/rss",
     "finance_wire":   "https://www.financewire.net/feed/",   # last article 2026-06-28
     "benzinga":       "https://www.benzinga.com/feed",       # last article 2026-07-02
     "cnn_business":   "http://rss.cnn.com/rss/money_latest.rss",  # CNN retired RSS; 1 row ever
@@ -111,8 +121,12 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/sentiment.db")
 # row — so 0.26% of the corpus was Tier 1 and the weighting did nothing.
 SOURCE_TRUST: dict[str, float] = {
     "fda":            1.0,   # official FDA press releases
+    "reuters":        1.0,   # Tier-1 wire (revived via Google News)
+    "dow_jones":      1.0,   # Tier-1 wire (WSJ / Dow Jones)
     "pr_newswire":    0.9,   # primary-source company releases
     "global_newswire":0.9,
+    "access_wire":    0.9,   # ACCESS Newswire (company releases)
+    "business_wire":  0.9,   # Business Wire (company releases)
     "cnbc":           0.85,
     "marketwatch":    0.85,
     "seeking_alpha":  0.8,

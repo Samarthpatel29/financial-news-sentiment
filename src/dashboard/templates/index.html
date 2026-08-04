@@ -1432,6 +1432,7 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
               <th data-col="ticker" data-tbl="tickers">Ticker</th>
               <th data-col="composite_score" data-tbl="tickers">Composite Score</th>
               <th data-col="article_count" data-tbl="tickers">Articles</th>
+              <th data-col="social_score" data-tbl="tickers" title="StockTwits (tweets) sentiment · tweet count = message density. Click to rank by tweets.">Tweets 🐦</th>
               <th>Bull / Bear / Neu</th>
               <th data-col="avg_trust" data-tbl="tickers">Trust</th>
               <th style="width:99%">Top Headline</th>
@@ -1466,6 +1467,11 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
                 </div>
               </td>
               <td style="text-align:center;font-family:var(--mono);font-weight:600">{{ t.article_count }}</td>
+              <td style="text-align:center;font-family:var(--mono);font-size:.82rem">
+                {% if t.social_count and t.social_count > 0 %}
+                <span style="color:{% if t.social_score>0.05 %}var(--pos){% elif t.social_score<-0.05 %}var(--neg){% else %}var(--neu){% endif %}">{{ '%+.2f'|format(t.social_score) }}</span><span style="color:var(--muted)"> · {{ t.social_count }}</span>
+                {% else %}<span style="color:var(--border2)">—</span>{% endif %}
+              </td>
               <td>
                 <div class="breakdown-bar">
                   <div class="bb-bull" style="flex:{{ t.bullish_count }}"></div>
@@ -1753,6 +1759,14 @@ tr.neg-row:hover { background: rgba(255,69,96,0.12); }
         <div class="modal-stat">
           <div class="big" id="tm-trust" style="color:var(--blue2)"></div>
           <div class="sm">Avg Trust Weight</div>
+        </div>
+        <div class="modal-stat">
+          <div class="big" id="tm-tweet-score"></div>
+          <div class="sm">🐦 Tweets Sentiment</div>
+        </div>
+        <div class="modal-stat">
+          <div class="big" id="tm-density" style="color:#a78bfa"></div>
+          <div class="sm">Message Density (tweets)</div>
         </div>
       </div>
       <a id="tm-link" href="#" target="_blank" rel="noopener" class="modal-link-btn">
@@ -3045,7 +3059,7 @@ function renderTickers(tickers) {
   document.getElementById('tick-count').textContent = filtered.length + ' tickers';
 
   if (!filtered.length) {
-    el.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted)">No tickers match the current filter</td></tr>`;
+    el.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:40px;color:var(--muted)">No tickers match the current filter</td></tr>`;
     return;
   }
   el.innerHTML = filtered.map((t, idx) => {
@@ -3053,11 +3067,16 @@ function renderTickers(tickers) {
     const hl     = (t.top_headline||'').length > 80 ? t.top_headline.substring(0,80)+'…' : (t.top_headline||'—');
     const tc     = t.avg_trust >= 1.0 ? 'var(--blue2)' : '#70AD47';
     const top3   = t.rank <= 3 ? 'top3' : '';
+    const twCol  = t.social_score>0.05?'var(--pos)':t.social_score<-0.05?'var(--neg)':'var(--neu)';
+    const tweets = (t.social_count>0)
+      ? `<span style="color:${twCol}">${(t.social_score>=0?'+':'')+Number(t.social_score).toFixed(2)}</span><span style="color:var(--muted)"> · ${t.social_count}</span>`
+      : `<span style="color:var(--border2)">—</span>`;
     return `<tr class="${t.label}-row" data-tickidx="${idx}" style="cursor:pointer">
       <td><span class="rank-num ${top3}">${t.rank}</span></td>
       <td><div class="ticker-sym-cell"><span class="ticker-sym ${symCls}">${t.ticker}</span></div></td>
       <td>${gaugeHtml(t.composite_score)}</td>
       <td style="text-align:center;font-family:var(--mono);font-weight:600">${t.article_count}</td>
+      <td style="text-align:center;font-family:var(--mono);font-size:.82rem">${tweets}</td>
       <td>
         <div class="breakdown-bar">
           <div class="bb-bull" style="flex:${t.bullish_count}"></div>
@@ -3259,6 +3278,13 @@ function openTickerModal(idx) {
   document.getElementById('tm-src').textContent   = t.top_source || '';
   document.getElementById('tm-count').textContent = t.article_count;
   document.getElementById('tm-trust').textContent = t.avg_trust + '×';
+
+  // Tweets (StockTwits) sentiment + message density (tweet volume)
+  const twScore = document.getElementById('tm-tweet-score');
+  const hasTweets = (t.social_count || 0) > 0;
+  twScore.textContent = hasTweets ? ((t.social_score>=0?'+':'') + Number(t.social_score).toFixed(2)) : '—';
+  twScore.style.color = hasTweets ? scoreColor(t.social_score) : 'var(--muted)';
+  document.getElementById('tm-density').textContent = hasTweets ? (t.social_count + ' msgs') : 'no tweets';
 
   const link = document.getElementById('tm-link');
   link.href = t.top_url || '#';

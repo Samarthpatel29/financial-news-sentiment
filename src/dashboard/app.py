@@ -64,7 +64,8 @@ SOURCE_DOMAINS = {
 SOURCE_LABELS = {
     "reuters": "Reuters", "dow_jones": "Dow Jones", "cnbc": "CNBC",
     "marketwatch": "MarketWatch", "pr_newswire": "PR Newswire",
-    "access_wires": "ACCESS Wires", "finance_wire": "FinanceWire",
+    "access_wires": "ACCESS Wires", "access_wire": "ACCESS Newswire",
+    "business_wire": "Business Wire", "finance_wire": "FinanceWire",
     "global_newswire": "GlobeNewswire", "yahoo_finance": "Yahoo Finance",
     "seeking_alpha": "Seeking Alpha", "fda": "FDA", "sec_edgar": "SEC EDGAR",
     "tradingview": "TradingView", "finviz": "FinViz",
