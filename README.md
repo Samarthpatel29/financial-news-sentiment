@@ -37,17 +37,24 @@ No paid API keys are required; everything runs on free data. The Groq key is opt
 ## Project structure
 
 ```
-run.py            → single entry point (pipeline + dashboard)
-start.sh          → one-command launch (calls run.py)
-requirements.txt  → dependencies
-src/              → all application code (collectors, sentiment, pipeline, dashboard, storage)
-config/           → settings, ticker universe, sector map
-api/              → serverless functions for the Vercel deploy (chatbot, verify)
-tests/            → automated test suite  ·  scripts/ → maintenance scripts
-docs/             → all documentation (reports, handoff notes, accuracy + differentiation)
-data/             → runtime database (created on first run)
-public/           → generated static snapshot for the web deploy
-project-admin/    → school/admin files (activity logs, charts) — not part of the code
+run.py             → single entry point (pipeline + dashboard)
+start.sh           → one-command launch (calls run.py)
+requirements.txt   → dependencies
+src/
+  collectors.py    → all data collectors (RSS news, StockTwits, SEC/EDGAR, Finviz, prices)
+  sentiment.py     → sentiment scoring (FinBERT + VADER + optional LLM judge + ranking)
+  pipeline.py      → orchestration: crew, per-ticker aggregation, fundamentals/predictions
+  storage.py       → database models (SQLAlchemy)
+  utils.py         → market-hours helper
+  dashboard/       → Flask app (app.py) + the HTML dashboard (templates/index.html)
+config/            → settings, ticker universe, sector map
+api/               → serverless functions for the Vercel deploy (chatbot, verify)
+tests/             → automated test suite   ·   scripts/ → maintenance scripts
+docs/              → all documentation (reports, accuracy, differentiation, handoff)
+data/              → runtime database (created on first run)
+public/            → generated static snapshot for the web deploy
+project-admin/     → school/admin files (activity logs, charts) — not part of the code
+SOURCE_CODE_BUNDLE.py → all Python source in one file, for quick review
 ```
 
 ## Architecture

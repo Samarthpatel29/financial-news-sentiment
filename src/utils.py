@@ -1,8 +1,14 @@
+"""utils — merged from 1 modules for a simpler layout."""
+from __future__ import annotations
+
+# ======================================================================
+# from utils/market_hours.py
+# ======================================================================
+
 """
 Market-hours helper for US equities (NYSE/NASDAQ).
 All times in US/Eastern.
 """
-from __future__ import annotations
 import datetime
 from zoneinfo import ZoneInfo
 
@@ -58,3 +64,4 @@ def pipeline_interval_seconds() -> int:
     if ms["status"] == "OPEN":
         return 90
     return 600  # CLOSED (weekend / overnight)
+

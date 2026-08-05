@@ -1,9 +1,7 @@
 # ============================================================================
 # SentimentIQ — COMPLETE SOURCE CODE BUNDLE (read-only reference)
-# All Python source concatenated into one file for easy review/handover.
-# This file is for READING. The runnable project keeps its module layout
-# (imports + Vercel/Docker deploys depend on it) — run it with: bash start.sh
-# Generated from 37 source files.
+# All Python source in one file. Run the project with: bash start.sh
+# 17 source files.
 # ============================================================================
 
 
@@ -41,9 +39,9 @@ log = logging.getLogger("run")
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config.settings import PIPELINE_INTERVAL, DATABASE_URL
-from src.pipeline.crew import SentimentCrew
-from src.storage.models import init_db
-from src.utils.market_hours import market_status, pipeline_interval_seconds
+from src.pipeline import SentimentCrew
+from src.storage import init_db
+from src.utils import market_status, pipeline_interval_seconds
 
 
 def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
@@ -91,8 +89,8 @@ def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
     # slow 6-hour cadence. First run is delayed 2 min so the news cycle can
     # populate the tracked-ticker list first.
     def fundamentals_cycle():
-        from src.storage.models import init_db
-        from src.pipeline.fundamentals import run_fundamentals_cycle
+        from src.storage import init_db
+        from src.pipeline import run_fundamentals_cycle
         try:
             db = init_db()
             n = run_fundamentals_cycle(db)
@@ -203,8 +201,8 @@ def main() -> None:
         _make_session, _ranked_rows, _ranked_tickers, _get_stats,
         _fundamental_rows, _signal_accuracy, _get_narrative,
     )
-    from src.utils.market_hours import market_status
-    from src.collectors.price_history import get_price_stats, get_candles
+    from src.utils import market_status
+    from src.collectors import get_price_stats, get_candles
 
     if os.path.isdir(OUT):
         shutil.rmtree(OUT)
@@ -699,7 +697,7 @@ TICKER_UNIVERSE -= _DELISTED
 # on Finviz"). If an export is present, its tickers are ADDED to the universe so
 # the screener drives what we track. Absent → we keep the built-in universe.
 try:
-    from src.collectors.finviz_screener import load_screener_tickers
+    from src.collectors import load_screener_tickers
     _screener_tickers = load_screener_tickers()
     if _screener_tickers:
         TICKER_UNIVERSE |= _screener_tickers
@@ -929,17 +927,1285 @@ AMBIGUOUS_NAMES: set[str] = {
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# FILE: src/pipeline/__init__.py
+# FILE: src/collectors.py
 # ────────────────────────────────────────────────────────────────────────────
 
-from .crew import SentimentCrew
+"""collectors — merged from 9 modules for a simpler layout."""
+from __future__ import annotations
 
-__all__ = ["SentimentCrew"]
+# ======================================================================
+# from collectors/rss_collector.py
+# ======================================================================
+
+import asyncio
+import datetime
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import List
+
+import ssl
+import aiohttp
+import certifi
+import feedparser
+
+_SSL = ssl.create_default_context(cafile=certifi.where())
+
+from config.settings import RSS_FEEDS, MAX_ARTICLES_PER_SOURCE
+
+log = logging.getLogger(__name__)
+
+# ── Google News URL decoding ──────────────────────────────────────────────────
+# Google News RSS links are redirects (news.google.com/rss/articles/...).
+# They hide the real article URL, which breaks OG-image scraping and gives
+# users an ugly redirect. Google's own batchexecute endpoint decodes them.
+# Cache: encoded URL → decoded URL, so each article is decoded exactly once
+# per process lifetime.
+_GN_CACHE: dict[str, str] = {}
+_GN_SEMAPHORE = asyncio.Semaphore(8)
+_GN_SIG_RE = re.compile(r'data-n-a-sg="([^"]+)"')
+_GN_TS_RE  = re.compile(r'data-n-a-ts="([^"]+)"')
+_GN_ID_RE  = re.compile(r"/articles/([^?]+)")
+_GN_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+
+async def _decode_gnews_url(session: aiohttp.ClientSession, article: "RawArticle") -> None:
+    """Resolve a news.google.com redirect to the real article URL (in place)."""
+    enc = article.url
+    if enc in _GN_CACHE:
+        if _GN_CACHE[enc]:
+            article.url = _GN_CACHE[enc]
+        return
+
+    async with _GN_SEMAPHORE:
+        try:
+            async with session.get(enc, timeout=aiohttp.ClientTimeout(total=8),
+                                   headers={"User-Agent": _GN_UA}) as resp:
+                page = await resp.text()
+            sig = _GN_SIG_RE.search(page)
+            ts  = _GN_TS_RE.search(page)
+            gn_id = _GN_ID_RE.search(enc)
+            if not (sig and ts and gn_id):
+                _GN_CACHE[enc] = ""
+                return
+            payload = (
+                '[[["Fbv4je","[\\"garturlreq\\",[[\\"X\\",\\"X\\",[\\"X\\",\\"X\\"],'
+                'null,null,1,1,\\"US:en\\",null,1,null,null,null,null,null,0,1],'
+                '\\"X\\",\\"X\\",1,[1,1,1],1,1,null,0,0,null,0],'
+                f'\\"{gn_id.group(1)}\\",{ts.group(1)},\\"{sig.group(1)}\\"]",'
+                'null,"generic"]]]'
+            )
+            async with session.post(
+                "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                headers={"User-Agent": _GN_UA,
+                         "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                data={"f.req": payload},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp2:
+                body = await resp2.text()
+            if "garturlres" in body:
+                m = re.search(r'https?://[^"\\]+', body.split("garturlres", 1)[1])
+                if m:
+                    _GN_CACHE[enc] = m.group(0)
+                    article.url = m.group(0)
+                    return
+            _GN_CACHE[enc] = ""
+        except Exception:
+            _GN_CACHE[enc] = ""
+
+
+# Concurrency cap for OG-image scraping (don't hammer article sites)
+_OG_SEMAPHORE = asyncio.Semaphore(10)
+# Browser UA — bot UAs get blocked or served stripped HTML by many sites
+_OG_HEADERS = {
+    "User-Agent": _GN_UA,
+    "Accept": "text/html",
+}
+_OG_TIMEOUT = aiohttp.ClientTimeout(total=5)
+# Regex to find og:image or twitter:image in <head> HTML
+_OG_RE = re.compile(
+    r'<meta[^>]+(?:property=["\']og:image["\']|name=["\']twitter:image["\'])[^>]+'
+    r'content=["\']([^"\']+)["\']'
+    r'|'
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+'
+    r'(?:property=["\']og:image["\']|name=["\']twitter:image["\'])',
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class RawArticle:
+    source:    str
+    title:     str
+    url:       str
+    body:      str
+    published: datetime.datetime = field(default_factory=datetime.datetime.utcnow)
+    image_url: str = ""
+
+
+class RSSCollector:
+    """Async parallel collection from all configured RSS feeds."""
+
+    def __init__(self, feeds: dict[str, str] = RSS_FEEDS):
+        self._feeds = feeds
+
+    async def _fetch_feed(
+        self,
+        session: aiohttp.ClientSession,
+        name: str,
+        url: str,
+    ) -> List[RawArticle]:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                text = await resp.text()
+        except Exception as exc:
+            log.warning("RSS fetch failed [%s]: %s", name, exc)
+            return []
+
+        parsed = feedparser.parse(text)
+        articles: List[RawArticle] = []
+        for entry in parsed.entries[:MAX_ARTICLES_PER_SOURCE]:
+            published = _parse_time(entry)
+            body = (
+                entry.get("summary")
+                or entry.get("description")
+                or entry.get("content", [{}])[0].get("value", "")
+            )
+            articles.append(RawArticle(
+                source=name,
+                title=entry.get("title", ""),
+                url=entry.get("link", ""),
+                body=body,
+                published=published,
+                image_url=_get_media_image(entry),
+            ))
+        log.debug("RSS [%s] → %d articles", name, len(articles))
+        return articles
+
+    async def collect_async(self) -> List[RawArticle]:
+        connector = aiohttp.TCPConnector(limit=30, ssl=_SSL)
+        # max_*_size raised: Yahoo Finance sends CSP headers > aiohttp's 8 KB
+        # default limit, which kills the request with LineTooLong
+        async with aiohttp.ClientSession(
+            connector=connector,
+            max_line_size=32_768,
+            max_field_size=32_768,
+        ) as session:
+            tasks = [
+                self._fetch_feed(session, name, url)
+                for name, url in self._feeds.items()
+            ]
+            results = await asyncio.gather(*tasks)
+            articles = [a for batch in results for a in batch]
+
+            # Resolve Google News redirect URLs to real article URLs first,
+            # so dedup keys on the real URL and OG scraping hits the article
+            gnews = [a for a in articles if "news.google.com/rss/articles" in a.url]
+            if gnews:
+                await asyncio.gather(*[_decode_gnews_url(session, a) for a in gnews],
+                                     return_exceptions=True)
+                decoded = sum(1 for a in gnews if "news.google.com" not in a.url)
+                if decoded:
+                    log.info("Google News decoder resolved %d/%d URLs", decoded, len(gnews))
+
+            # Enrich articles that have no image by scraping OG tags
+            no_img = [a for a in articles if not a.image_url and a.url.startswith("http")]
+            if no_img:
+                og_tasks = [_fetch_og_image(session, a) for a in no_img]
+                await asyncio.gather(*og_tasks, return_exceptions=True)
+                enriched = sum(1 for a in no_img if a.image_url)
+                if enriched:
+                    log.info("OG scraper enriched %d/%d articles with images", enriched, len(no_img))
+
+        return articles
+
+    def collect(self) -> List[RawArticle]:
+        return asyncio.run(self.collect_async())
+
+
+async def _fetch_og_image(session: aiohttp.ClientSession, article: "RawArticle") -> None:
+    """Fetch the article page and extract og:image / twitter:image into article.image_url."""
+    async with _OG_SEMAPHORE:
+        try:
+            async with session.get(
+                article.url, timeout=_OG_TIMEOUT,
+                headers=_OG_HEADERS, allow_redirects=True,
+            ) as resp:
+                if resp.status != 200:
+                    return
+                # Read first 120 KB — heavy pages (Yahoo Finance) bury
+                # og:image past 60 KB of inlined scripts
+                chunk = await resp.content.read(120_000)
+                text = chunk.decode("utf-8", errors="ignore")
+        except Exception:
+            return
+
+    m = _OG_RE.search(text)
+    if m:
+        img_url = (m.group(1) or m.group(2) or "").strip()
+        if img_url.startswith("http"):
+            article.image_url = img_url
+
+
+def _get_media_image(entry) -> str:
+    """Extract the best available image URL from an RSS entry."""
+    # media:thumbnail (most common in news RSS)
+    thumbs = getattr(entry, "media_thumbnail", None)
+    if thumbs and isinstance(thumbs, list) and thumbs[0].get("url"):
+        return thumbs[0]["url"]
+
+    # media:content with image type
+    content = getattr(entry, "media_content", None)
+    if content and isinstance(content, list):
+        for m in content:
+            url = m.get("url", "")
+            if url and (m.get("medium") == "image" or
+                        any(url.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"))):
+                return url
+
+    # enclosures (podcasts/images)
+    for enc in getattr(entry, "enclosures", []):
+        if enc.get("type", "").startswith("image/"):
+            return enc.get("href") or enc.get("url", "")
+
+    # img tag buried in summary HTML
+    summary = entry.get("summary", "") or entry.get("description", "")
+    if summary and "<img" in summary:
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(summary, "html.parser")
+            img = soup.find("img")
+            if img and img.get("src", "").startswith("http"):
+                return img["src"]
+        except Exception:
+            pass
+
+    return ""
+
+
+def _parse_time(entry) -> datetime.datetime:
+    if hasattr(entry, "published_parsed") and entry.published_parsed:
+        try:
+            return datetime.datetime(*entry.published_parsed[:6])
+        except Exception:
+            pass
+    return datetime.datetime.utcnow()
+
+
+# ======================================================================
+# from collectors/scraper_collector.py
+# ======================================================================
+
+import asyncio
+import datetime
+import logging
+from typing import List
+
+import aiohttp
+import feedparser
+from bs4 import BeautifulSoup
+
+from config.settings import SCRAPER_TARGETS, SCRAPER_TIMEOUT, SCRAPER_USER_AGENT
+
+log = logging.getLogger(__name__)
+
+HEADERS = {"User-Agent": SCRAPER_USER_AGENT}
+
+
+def _get_og_image(soup) -> str:
+    """Extract Open Graph or Twitter card image from a BeautifulSoup page."""
+    for attr, key in [("property", "og:image"), ("name", "twitter:image"),
+                      ("property", "og:image:url"), ("itemprop", "image")]:
+        tag = soup.find("meta", {attr: key})
+        if tag and tag.get("content", "").startswith("http"):
+            return tag["content"]
+    return ""
+
+
+class ScraperCollector:
+    """HTML scraper for TradingView, FinViz, SEC EDGAR, and FDA."""
+
+    async def _scrape_generic(
+        self,
+        session: aiohttp.ClientSession,
+        name: str,
+        cfg: dict,
+    ) -> List[RawArticle]:
+        # FDA exposes RSS — delegate to feedparser
+        if "rss" in cfg:
+            try:
+                async with session.get(
+                    cfg["rss"],
+                    headers=HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=SCRAPER_TIMEOUT),
+                ) as resp:
+                    text = await resp.text()
+                parsed = feedparser.parse(text)
+                return [
+                    RawArticle(
+                        source=name,
+                        title=e.get("title", ""),
+                        url=e.get("link", ""),
+                        body=e.get("summary", ""),
+                        published=datetime.datetime.utcnow(),
+                    )
+                    for e in parsed.entries[:50]
+                ]
+            except Exception as exc:
+                log.warning("Scraper RSS [%s]: %s", name, exc)
+                return []
+
+        url = cfg["url"].format(date=datetime.date.today().isoformat())
+        try:
+            async with session.get(
+                url,
+                headers=HEADERS,
+                timeout=aiohttp.ClientTimeout(total=SCRAPER_TIMEOUT),
+            ) as resp:
+                html = await resp.text()
+        except Exception as exc:
+            log.warning("Scraper fetch [%s]: %s", name, exc)
+            return []
+
+        soup = BeautifulSoup(html, "lxml")
+        page_og_image = _get_og_image(soup)   # fallback: page-level OG image
+        articles: List[RawArticle] = []
+        for row in soup.select(cfg["article_sel"])[:50]:
+            title_tag = row.select_one(cfg["title_sel"])
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+            href  = title_tag.get("href", "")
+            if href and not href.startswith("http"):
+                from urllib.parse import urlparse, urljoin
+                href = urljoin(url, href)
+            # row-level image first, then page og, then empty
+            row_img = ""
+            img_tag = row.find("img")
+            if img_tag:
+                row_img = img_tag.get("src", "") or img_tag.get("data-src", "")
+                if row_img and not row_img.startswith("http"):
+                    row_img = ""
+            articles.append(RawArticle(
+                source=name,
+                title=title,
+                url=href,
+                body="",
+                published=datetime.datetime.utcnow(),
+                image_url=row_img or page_og_image,
+            ))
+        log.debug("Scraper [%s] → %d articles", name, len(articles))
+        return articles
+
+    async def collect_async(self) -> List[RawArticle]:
+        connector = aiohttp.TCPConnector(limit=10, ssl=_SSL)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            tasks = [
+                self._scrape_generic(session, name, cfg)
+                for name, cfg in SCRAPER_TARGETS.items()
+            ]
+            results = await asyncio.gather(*tasks)
+        return [a for batch in results for a in batch]
+
+    def collect(self) -> List[RawArticle]:
+        return asyncio.run(self.collect_async())
+
+
+# ======================================================================
+# from collectors/broker_collector.py
+# ======================================================================
+
+"""
+Free-tier news collectors replacing the broker API feeds.
+
+  FinnhubCollector  — finnhub.io    (60 calls/min free, no credit card)
+  NewsAPICollector  — newsapi.org   (100 req/day free developer plan)
+
+Both are commonly used in student/academic finance projects.
+"""
+import datetime
+import logging
+from typing import List
+
+import certifi
+import requests
+
+from config.settings import FINNHUB_API_KEY, NEWSAPI_KEY
+
+log = logging.getLogger(__name__)
+
+
+class FinnhubCollector:
+    """
+    Pulls general market news from Finnhub's free tier.
+    Sign up at finnhub.io — the API key is shown right on your dashboard.
+    """
+
+    BASE_URL = "https://finnhub.io/api/v1"
+
+    def collect(self) -> List[RawArticle]:
+        if not FINNHUB_API_KEY or FINNHUB_API_KEY == "PASTE_YOUR_FINNHUB_KEY_HERE":
+            log.info("Finnhub key not set — skipping (add FINNHUB_API_KEY to .env)")
+            return []
+
+        articles: List[RawArticle] = []
+
+        # General market news (category: general, forex, crypto, merger)
+        for category in ("general", "merger"):
+            try:
+                resp = requests.get(
+                    f"{self.BASE_URL}/news",
+                    params={"category": category, "token": FINNHUB_API_KEY},
+                    timeout=10,
+                    verify=certifi.where(),
+                )
+                resp.raise_for_status()
+                for item in resp.json()[:30]:
+                    articles.append(RawArticle(
+                        source=f"finnhub_{category}",
+                        title=item.get("headline", ""),
+                        url=item.get("url", ""),
+                        body=item.get("summary", ""),
+                        published=datetime.datetime.utcfromtimestamp(
+                            item.get("datetime", 0) or 0
+                        ),
+                    ))
+            except Exception as exc:
+                log.warning("Finnhub [%s] error: %s", category, exc)
+
+        log.debug("Finnhub → %d articles", len(articles))
+        return articles
+
+
+class NewsAPICollector:
+    """
+    Pulls financial headlines from NewsAPI's free developer plan.
+    Sign up at newsapi.org — you get 100 requests/day free.
+    """
+
+    BASE_URL = "https://newsapi.org/v2"
+
+    QUERIES = [
+        "stock market",
+        "earnings report",
+        "federal reserve",
+        "IPO merger acquisition",
+    ]
+
+    def collect(self) -> List[RawArticle]:
+        if not NEWSAPI_KEY or NEWSAPI_KEY == "PASTE_YOUR_NEWSAPI_KEY_HERE":
+            log.info("NewsAPI key not set — skipping (add NEWSAPI_KEY to .env)")
+            return []
+
+        articles: List[RawArticle] = []
+        seen: set[str] = set()
+
+        for query in self.QUERIES:
+            try:
+                resp = requests.get(
+                    f"{self.BASE_URL}/everything",
+                    verify=certifi.where(),
+                    params={
+                        "q":        query,
+                        "language": "en",
+                        "sortBy":   "publishedAt",
+                        "pageSize": 10,
+                        "apiKey":   NEWSAPI_KEY,
+                    },
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                for item in resp.json().get("articles", []):
+                    url = item.get("url", "")
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    articles.append(RawArticle(
+                        source="newsapi",
+                        title=item.get("title", "") or "",
+                        url=url,
+                        body=item.get("description", "") or "",
+                        published=_parse_newsapi_date(item.get("publishedAt")),
+                    ))
+            except Exception as exc:
+                log.warning("NewsAPI [%s] error: %s", query, exc)
+
+        log.debug("NewsAPI → %d articles", len(articles))
+        return articles
+
+
+def _parse_newsapi_date(s: str | None) -> datetime.datetime:
+    if not s:
+        return datetime.datetime.utcnow()
+    try:
+        return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        return datetime.datetime.utcnow()
+
+
+class BrokerCollector:
+    """Wraps all free-tier API collectors under one interface."""
+
+    def __init__(self):
+        self._finnhub  = FinnhubCollector()
+        self._newsapi  = NewsAPICollector()
+
+    def collect(self, tickers: list[str] | None = None) -> List[RawArticle]:
+        articles = []
+        articles.extend(self._finnhub.collect())
+        articles.extend(self._newsapi.collect())
+        return articles
+
+
+# ======================================================================
+# from collectors/stocktwits_collector.py
+# ======================================================================
+
+"""
+StockTwits trending-stream collector.
+
+Free public API, no key required — the zero-cost alternative to the Twitter/X
+API for "tweets' sentiment". Each trending message becomes a RawArticle whose
+body is the message text; cashtags ($AAPL) flow straight into the existing
+3-pass ticker extractor.
+
+Rate limit: 200 req/hr unauthenticated. We make exactly 1 request per pipeline
+cycle (max 60/hr), so we stay well under it.
+"""
+import datetime
+import json
+import logging
+import subprocess
+from typing import List
+
+from config.settings import STOCKTWITS_TRENDING_URL, STOCKTWITS_ENABLED
+
+log = logging.getLogger(__name__)
+
+# Cloudflare blocks Python's TLS fingerprint (requests/aiohttp get 403)
+# but curl's fingerprint passes — so we shell out to curl.
+_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+
+class StockTwitsCollector:
+    """Fetch trending messages from StockTwits' free public API."""
+
+    def collect(self) -> List[RawArticle]:
+        if not STOCKTWITS_ENABLED:
+            return []
+        try:
+            out = subprocess.run(
+                ["curl", "-s", "--max-time", "10", "-H", f"User-Agent: {_UA}",
+                 STOCKTWITS_TRENDING_URL],
+                capture_output=True, text=True, timeout=15,
+            )
+            messages = json.loads(out.stdout).get("messages", [])
+        except Exception as exc:
+            log.warning("StockTwits fetch failed: %s", exc)
+            return []
+
+        articles: List[RawArticle] = []
+        for m in messages:
+            body = m.get("body", "")
+            if not body:
+                continue
+            symbols = [s.get("symbol", "") for s in m.get("symbols", [])]
+            # Prefix cashtags so the $TICKER extraction pass catches them
+            cashtags = " ".join(f"${s}" for s in symbols if s)
+            user = (m.get("user") or {}).get("username", "user")
+
+            created = m.get("created_at", "")
+            try:
+                published = datetime.datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ")
+            except (ValueError, TypeError):
+                published = datetime.datetime.utcnow()
+
+            articles.append(RawArticle(
+                source="stocktwits",
+                title=f"@{user}: {body[:120]}",
+                url=f"https://stocktwits.com/{user}/message/{m.get('id','')}",
+                body=f"{cashtags} {body}".strip(),
+                published=published,
+                image_url=(m.get("entities") or {}).get("chart", {}).get("url", "") or "",
+            ))
+
+        log.info("StockTwits → %d trending messages", len(articles))
+        return articles
+
+
+# ======================================================================
+# from collectors/edgar_collector.py
+# ======================================================================
+
+"""
+SEC EDGAR filings collector — Phase A of the long-term fundamentals engine.
+
+Pulls each tracked ticker's recent official filings (10-K annual, 10-Q earnings,
+8-K contract/event) from the **free** SEC EDGAR APIs (no key required) and
+returns them as RawFiling records for storage + scoring in later phases.
+
+Free endpoints used (SEC asks for a descriptive User-Agent and <=10 req/sec):
+  - ticker->CIK map:  https://www.sec.gov/files/company_tickers.json
+  - filing history:   https://data.sec.gov/submissions/CIK##########.json
+  - the document:     https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}
+
+See docs/FUNDAMENTALS_PLAN.md for the full design.
+"""
+import datetime
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Iterable
+
+import requests
+
+log = logging.getLogger(__name__)
+
+# SEC requires a real, descriptive User-Agent (their fair-access policy).
+_HEADERS = {
+    "User-Agent": "SentimentIQ Research (academic project; shp5246@psu.edu)",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
+_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
+
+# Form type -> our long-term section category
+_FORM_KIND = {
+    "10-K":  "annual",
+    "10-K/A":"annual",
+    "10-Q":  "earnings",
+    "10-Q/A":"earnings",
+    "8-K":   "contract",   # 8-Ks include material agreements / earnings releases
+    "8-K/A": "contract",
+}
+
+# Rolling window for "long-term, within 1 week" signal
+LOOKBACK_DAYS = 7
+
+
+@dataclass
+class RawFiling:
+    cik:          str
+    ticker:       str
+    form_type:    str
+    section_kind: str
+    filed_at:     datetime.datetime
+    accession:    str
+    url:          str
+    title:        str = ""
+
+
+class EdgarCollector:
+    """Fetches recent 10-K / 10-Q / 8-K filings for a set of tickers."""
+
+    def __init__(self, lookback_days: int = LOOKBACK_DAYS):
+        self.lookback_days = lookback_days
+        self._cik_map: dict[str, str] | None = None     # TICKER -> 10-digit CIK
+        self._map_loaded_at: float = 0.0
+
+    # ── ticker -> CIK map (cached ~24h) ────────────────────────────────────────
+    def _load_cik_map(self) -> dict[str, str]:
+        if self._cik_map is not None and (time.time() - self._map_loaded_at) < 86400:
+            return self._cik_map
+        try:
+            resp = requests.get(_TICKER_MAP_URL, headers=_HEADERS, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.warning("EDGAR ticker map fetch failed: %s", exc)
+            return self._cik_map or {}
+
+        # data is {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
+        mapping: dict[str, str] = {}
+        for row in data.values():
+            tic = str(row.get("ticker", "")).upper()
+            cik = str(row.get("cik_str", "")).zfill(10)
+            if tic:
+                mapping[tic] = cik
+        self._cik_map = mapping
+        self._map_loaded_at = time.time()
+        log.info("EDGAR ticker->CIK map loaded (%d companies)", len(mapping))
+        return mapping
+
+    # ── recent filings for one ticker ──────────────────────────────────────────
+    def _filings_for_ticker(self, ticker: str, cik: str,
+                            cutoff: datetime.datetime) -> list[RawFiling]:
+        url = _SUBMISSIONS_URL.format(cik10=cik)
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=15)
+            if resp.status_code != 200:
+                return []
+            recent = resp.json().get("filings", {}).get("recent", {})
+        except Exception as exc:
+            log.debug("EDGAR submissions failed [%s]: %s", ticker, exc)
+            return []
+
+        forms      = recent.get("form", [])
+        dates      = recent.get("filingDate", [])
+        accessions = recent.get("accessionNumber", [])
+        primaries  = recent.get("primaryDocument", [])
+        titles     = recent.get("primaryDocDescription", [])
+
+        out: list[RawFiling] = []
+        cik_int = str(int(cik))   # Archives path uses the un-padded CIK
+        for i, form in enumerate(forms):
+            if form not in _FORM_KIND:
+                continue
+            try:
+                filed = datetime.datetime.strptime(dates[i], "%Y-%m-%d")
+            except (ValueError, IndexError):
+                continue
+            if filed < cutoff:
+                continue
+            acc = accessions[i]
+            acc_nodash = acc.replace("-", "")
+            doc = primaries[i] if i < len(primaries) else ""
+            doc_url = (
+                f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_nodash}/{doc}"
+                if doc else
+                f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}"
+            )
+            out.append(RawFiling(
+                cik=cik, ticker=ticker, form_type=form,
+                section_kind=_FORM_KIND[form], filed_at=filed,
+                accession=acc, url=doc_url,
+                title=(titles[i] if i < len(titles) else "") or form,
+            ))
+        return out
+
+    # ── all-time report history (10-K / 10-Q) for one ticker ──────────────────
+    def collect_history(self, ticker: str, max_filings: int = 16) -> list[RawFiling]:
+        """
+        The company's report history going back years — 10-K annual reports and
+        10-Q earnings reports, newest first, capped at max_filings. Same free
+        submissions JSON as collect(); no extra API, no key.
+        """
+        cik_map = self._load_cik_map()
+        tic = str(ticker).upper().lstrip("$")
+        cik = cik_map.get(tic)
+        if not cik:
+            return []
+        url = _SUBMISSIONS_URL.format(cik10=cik)
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=15)
+            if resp.status_code != 200:
+                return []
+            recent = resp.json().get("filings", {}).get("recent", {})
+        except Exception as exc:
+            log.debug("EDGAR history failed [%s]: %s", tic, exc)
+            return []
+
+        forms      = recent.get("form", [])
+        dates      = recent.get("filingDate", [])
+        accessions = recent.get("accessionNumber", [])
+        primaries  = recent.get("primaryDocument", [])
+        titles     = recent.get("primaryDocDescription", [])
+
+        out: list[RawFiling] = []
+        cik_int = str(int(cik))
+        for i, form in enumerate(forms):
+            if form not in ("10-K", "10-Q"):
+                continue
+            try:
+                filed = datetime.datetime.strptime(dates[i], "%Y-%m-%d")
+            except (ValueError, IndexError):
+                continue
+            acc = accessions[i]
+            doc = primaries[i] if i < len(primaries) else ""
+            if not doc:
+                continue
+            out.append(RawFiling(
+                cik=cik, ticker=tic, form_type=form,
+                section_kind=_FORM_KIND[form], filed_at=filed,
+                accession=acc,
+                url=f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc.replace('-','')}/{doc}",
+                title=(titles[i] if i < len(titles) else "") or form,
+            ))
+            if len(out) >= max_filings:
+                break
+        return out
+
+    # ── public API ─────────────────────────────────────────────────────────────
+    def collect(self, tickers: Iterable[str]) -> list[RawFiling]:
+        cik_map = self._load_cik_map()
+        if not cik_map:
+            return []
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=self.lookback_days)
+
+        results: list[RawFiling] = []
+        seen_ciks: set[str] = set()
+        for raw_tic in tickers:
+            tic = str(raw_tic).upper().lstrip("$")
+            cik = cik_map.get(tic)
+            if not cik or cik in seen_ciks:
+                continue
+            seen_ciks.add(cik)
+            results.extend(self._filings_for_ticker(tic, cik, cutoff))
+            time.sleep(0.12)   # be polite: well under SEC's 10 req/sec limit
+
+        log.info("EDGAR: %d filings in last %dd across %d tickers",
+                 len(results), self.lookback_days, len(seen_ciks))
+        return results
+
+
+# ======================================================================
+# from collectors/edgar_extractor.py
+# ======================================================================
+
+"""
+SEC filing section extractor — Phase B of the long-term fundamentals engine.
+
+Filings are huge (a 10-K can be 300+ pages), so we download the primary document
+and pull only the high-signal sections per form type:
+
+  10-K (annual)   -> Risk Factors (Item 1A) + MD&A (Item 7)
+  10-Q (earnings) -> MD&A (Item 2) + results-of-operations text
+  8-K  (contract) -> Item 1.01 material agreement / Item 2.02 results / body
+
+Everything is capped to a few thousand characters before scoring so FinBERT and
+Groq stay fast and within the free tier. Pure stdlib + BeautifulSoup (free).
+"""
+import logging
+import re
+
+import requests
+from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
+
+_HEADERS_EXT = {
+    "User-Agent": "SentimentIQ Research (academic project; shp5246@psu.edu)",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+MAX_CHARS = 6000   # cap fed to scoring per filing
+
+# Anchor phrases that mark the start of high-signal sections, by section kind.
+_ANCHORS = {
+    "annual": [
+        "risk factors",
+        "management's discussion and analysis",
+        "management’s discussion and analysis",
+    ],
+    "earnings": [
+        "management's discussion and analysis",
+        "management’s discussion and analysis",
+        "results of operations",
+    ],
+    "contract": [
+        "item 1.01",
+        "entry into a material definitive agreement",
+        "item 2.02",
+        "results of operations and financial condition",
+    ],
+}
+
+
+def _clean_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "table"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _slice_around_anchors(text: str, kind: str) -> str:
+    """Return text starting at the first matching section anchor, capped."""
+    low = text.lower()
+    best = None
+    for anchor in _ANCHORS.get(kind, []):
+        idx = low.find(anchor)
+        # Skip a hit that's only in the table of contents (very early in doc)
+        if idx != -1 and idx > 500:
+            best = idx if best is None else min(best, idx)
+    if best is not None:
+        return text[best : best + MAX_CHARS]
+    # Fallback: skip the cover page, take the first substantive chunk
+    return text[500 : 500 + MAX_CHARS]
+
+
+def extract_section(url: str, section_kind: str) -> str:
+    """
+    Download a filing's primary document and return the high-signal section text
+    for scoring. Returns "" on any failure (caller skips gracefully).
+    """
+    try:
+        resp = requests.get(url, headers=_HEADERS_EXT, timeout=20)
+        if resp.status_code != 200 or not resp.text:
+            return ""
+    except Exception as exc:
+        log.debug("Filing fetch failed [%s]: %s", url, exc)
+        return ""
+
+    text = _clean_text(resp.text)
+    if len(text) < 200:
+        return ""
+    return _slice_around_anchors(text, section_kind)
+
+
+# ======================================================================
+# from collectors/finviz_screener.py
+# ======================================================================
+
+"""
+Finviz screener CSV loader.
+
+The brief: "A CSV file is extracted via an existing screener on Finviz." Finviz
+(Elite) lets you export a screener's results as a CSV — a "Ticker" column plus
+whatever fields the screener shows. Drop that export at data/finviz_screener.csv
+(or point FINVIZ_SCREENER_CSV at it) and the tracked ticker universe picks it up
+automatically. When no CSV is present we fall back to the built-in universe, so
+nothing breaks before your Finviz credentials arrive.
+
+Pure stdlib (csv) — free, no Finviz API or login needed to READ an export.
+"""
+import csv
+import logging
+import os
+
+log = logging.getLogger(__name__)
+
+# Where the Finviz screener export is expected. Override with the env var.
+DEFAULT_CSV = os.getenv("FINVIZ_SCREENER_CSV", "data/finviz_screener.csv")
+
+# Finviz's export header is "Ticker"; accept a couple of common variants.
+_TICKER_COLS = {"ticker", "symbol", "tickers"}
+
+
+def _looks_like_ticker(t: str) -> bool:
+    # 1–6 chars, letters/digits with an optional . or - (e.g. BRK.B, RDS-A)
+    return bool(t) and len(t) <= 6 and t.replace(".", "").replace("-", "").isalnum()
+
+
+def load_screener_tickers(path: str | None = None) -> set[str]:
+    """
+    Return the set of tickers from a Finviz screener CSV export.
+    Empty set when the file is missing or unreadable (caller falls back).
+    """
+    path = path or DEFAULT_CSV
+    if not path or not os.path.isfile(path):
+        return set()
+
+    out: set[str] = set()
+    try:
+        # utf-8-sig strips the BOM Finviz sometimes prepends.
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            col = next((name for name in (reader.fieldnames or [])
+                        if name and name.strip().lower() in _TICKER_COLS), None)
+            if col is None:
+                log.warning("Finviz CSV %s has no Ticker/Symbol column (%s)",
+                            path, reader.fieldnames)
+                return set()
+            for row in reader:
+                t = (row.get(col) or "").strip().upper()
+                if _looks_like_ticker(t):
+                    out.add(t)
+    except Exception as exc:  # noqa: BLE001 — never break startup on a bad file
+        log.warning("Finviz screener CSV load failed (%s): %s", path, exc)
+        return set()
+
+    log.info("Finviz screener CSV: loaded %d tickers from %s", len(out), path)
+    return out
+
+
+# ======================================================================
+# from collectors/finviz_verify.py
+# ======================================================================
+
+"""
+Finviz cross-check — verify a prediction against an independent source.
+
+Fetches the free Finviz quote page for a ticker and pulls the data points a
+user can check our BUY/SELL/HOLD signal against:
+  - analyst recommendation (Finviz "Recom", 1=Strong Buy … 5=Strong Sell)
+  - analyst price target (+ implied upside vs current price)
+  - actual recent performance (week / month / year / YTD)
+
+We compare our signal to the analyst consensus and report AGREE / MIXED /
+DISAGREE, so the prediction can be independently validated. Finviz is one of
+the project's sanctioned sources; we fetch politely (real User-Agent, cached
+~30 min, low volume) and degrade gracefully if the page is unavailable.
+"""
+import re
+import time
+
+import requests
+
+_UA_FV = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+_URL = "https://finviz.com/quote.ashx?t={t}"
+_CACHE: dict[str, tuple[float, dict]] = {}
+_TTL_FV = 1800   # 30 min
+
+_FIELDS = ["Price", "Recom", "Target Price",
+           "Perf Week", "Perf Month", "Perf Year", "Perf YTD"]
+
+
+def _grab(html: str, label: str) -> str | None:
+    i = html.find(f">{label}</a>")
+    if i == -1:
+        i = html.find(f">{label}<")
+    if i == -1:
+        return None
+    j = html.find("snapshot-td-content", i)
+    if j == -1:
+        return None
+    chunk = html[j:html.find("</div>", j)]
+    text = re.sub(r"<[^>]+>", "", chunk).replace('snapshot-td-content"', "").strip(' ">')
+    return text or None
+
+
+def _num(s: str | None) -> float | None:
+    if not s:
+        return None
+    try:
+        return float(s.replace("%", "").replace("$", "").replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _recom_to_signal(recom: float | None) -> str | None:
+    """Finviz Recom 1..5 → analyst consensus as BUY/HOLD/SELL."""
+    if recom is None:
+        return None
+    if recom <= 2.5:
+        return "BUY"
+    if recom >= 3.5:
+        return "SELL"
+    return "HOLD"
+
+
+def _agreement(ours: str, theirs: str | None) -> str:
+    if theirs is None:
+        return "UNKNOWN"
+    if ours == theirs:
+        return "AGREE"
+    # one side neutral, the other directional
+    if "HOLD" in (ours, theirs):
+        return "MIXED"
+    return "DISAGREE"   # BUY vs SELL
+
+
+def verify(ticker: str, our_signal: str = "") -> dict | None:
+    """
+    Cross-check our signal against Finviz for one ticker.
+    Returns a dict of the Finviz data + agreement verdict, or None on failure.
+    """
+    key = ticker.upper().lstrip("$")
+    now = time.time()
+    if key in _CACHE and (now - _CACHE[key][0]) < _TTL_FV:
+        data = dict(_CACHE[key][1])
+    else:
+        try:
+            resp = requests.get(_URL.format(t=key), headers={"User-Agent": _UA_FV},
+                                timeout=15, allow_redirects=True)
+            if resp.status_code != 200 or "snapshot-td-content" not in resp.text:
+                return None
+            html = resp.text
+        except Exception:
+            return None
+
+        raw = {f: _grab(html, f) for f in _FIELDS}
+        price  = _num(raw.get("Price"))
+        recom  = _num(raw.get("Recom"))
+        target = _num(raw.get("Target Price"))
+        upside = round((target / price - 1.0) * 100, 1) if (target and price) else None
+        data = {
+            "ticker":         key,
+            "price":          price,
+            "recom":          recom,
+            "recom_signal":   _recom_to_signal(recom),
+            "target":         target,
+            "target_upside":  upside,
+            "perf_week":      raw.get("Perf Week"),
+            "perf_month":     raw.get("Perf Month"),
+            "perf_year":      raw.get("Perf Year"),
+            "perf_ytd":       raw.get("Perf YTD"),
+            "source_url":     f"https://finviz.com/quote.ashx?t={key}",
+            "checked_at":     time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now)),
+        }
+        _CACHE[key] = (now, dict(data))
+
+    if our_signal:
+        data["our_signal"] = our_signal.upper()
+        data["agreement"] = _agreement(our_signal.upper(), data.get("recom_signal"))
+    return data
+
+
+# ======================================================================
+# from collectors/price_history.py
+# ======================================================================
+
+"""
+All-time price history + reliability stats — free, no API key.
+
+Source: Yahoo Finance via the `yfinance` library (free, handles Yahoo's session
+cookie/crumb). We pull full monthly history (period="max") — light and fast,
+and plenty of resolution for a long-term reliability view.
+
+We turn that history into the "is this stock reliable?" stats a long-term
+investor wants: all-time high/low, distance from the peak, 1-year / 5-year /
+all-time returns, max drawdown, annualized volatility, plus a sparkline.
+
+Results are cached in-memory for a few hours (history barely changes intraday
+and we stay polite to Yahoo).
+"""
+import logging
+import math
+import time
+
+log = logging.getLogger(__name__)
+
+_CACHE: dict[str, tuple[float, dict]] = {}     # ticker -> (fetched_at, stats)
+_NEG_CACHE: dict[str, float] = {}              # ticker -> when we last got nothing
+_TTL = 6 * 3600                                # 6 hours
+_NEG_TTL = 1800                                # don't re-hit a dead ticker for 30 min
+_SPARK_POINTS = 64
+
+
+def _downsample(closes: list[float], n: int = _SPARK_POINTS) -> list[float]:
+    if len(closes) <= n:
+        return [round(c, 2) for c in closes]
+    step = len(closes) / n
+    return [round(closes[min(int(i * step), len(closes) - 1)], 2) for i in range(n)]
+
+
+def _fetch_closes(ticker: str) -> tuple[list[str], list[float]]:
+    """Return (dates, monthly closes) oldest→newest, or ([],[]) on failure."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="max", interval="1mo", auto_adjust=True)
+    except Exception as exc:
+        log.debug("yfinance failed [%s]: %s", ticker, exc)
+        return [], []
+    if hist is None or hist.empty or "Close" not in hist:
+        return [], []
+    closes, dates = [], []
+    for idx, val in hist["Close"].items():
+        try:
+            c = float(val)
+        except (TypeError, ValueError):
+            continue
+        if c > 0 and not math.isnan(c):
+            closes.append(c)
+            dates.append(idx.date().isoformat())
+    return dates, closes
+
+
+_CANDLE_CACHE: dict[str, tuple[float, list]] = {}
+_CANDLE_TTL = 1800   # 30 min — daily candles barely move intraday
+
+
+def get_candles(ticker: str, days: int = 520) -> list[dict]:
+    """
+    Daily OHLC candles for the candlestick chart (free, via yfinance). Pulls ~2
+    years so the chart can zoom across timeframes (1M/3M/6M/1Y/2Y) client-side.
+    Returns [{d, o, h, l, c}, ...] oldest→newest, or [] on failure.
+    """
+    key = ticker.upper().lstrip("$")
+    now = time.time()
+    if key in _CANDLE_CACHE and (now - _CANDLE_CACHE[key][0]) < _CANDLE_TTL:
+        return _CANDLE_CACHE[key][1]
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(key).history(period="2y", interval="1d", auto_adjust=True)
+    except Exception as exc:
+        log.debug("yfinance candles failed [%s]: %s", key, exc)
+        return []
+    if hist is None or hist.empty:
+        return []
+    out: list[dict] = []
+    for idx, row in hist.iterrows():
+        try:
+            o, h, l, c = (float(row["Open"]), float(row["High"]),
+                          float(row["Low"]), float(row["Close"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if any(map(math.isnan, (o, h, l, c))) or c <= 0:
+            continue
+        out.append({"d": idx.date().isoformat(),
+                    "o": round(o, 2), "h": round(h, 2),
+                    "l": round(l, 2), "c": round(c, 2)})
+    out = out[-days:]
+    _CANDLE_CACHE[key] = (now, out)
+    return out
+
+
+def get_price_stats(ticker: str) -> dict | None:
+    """All-time reliability stats for a ticker, or None if no data."""
+    key = ticker.upper().lstrip("$")
+    now = time.time()
+    if key in _CACHE and (now - _CACHE[key][0]) < _TTL:
+        return _CACHE[key][1]
+    if key in _NEG_CACHE and (now - _NEG_CACHE[key]) < _NEG_TTL:
+        return None
+
+    dates, closes = _fetch_closes(key)
+    if len(closes) < 12:
+        _NEG_CACHE[key] = now
+        return None
+
+    latest = closes[-1]
+    ath    = max(closes)
+    atl    = min(closes)
+
+    def ret_over(months: int) -> float | None:
+        if len(closes) <= months:
+            return None
+        past = closes[-months - 1]
+        return (latest / past - 1.0) * 100 if past else None
+
+    # max drawdown on monthly closes (largest peak-to-trough drop)
+    peak = closes[0]; max_dd = 0.0
+    for c in closes:
+        peak = max(peak, c)
+        if peak:
+            max_dd = min(max_dd, (c / peak - 1.0))
+
+    # annualized volatility from monthly returns (×√12)
+    rets = [(closes[i] / closes[i - 1] - 1.0) for i in range(1, len(closes)) if closes[i - 1]]
+    if len(rets) > 1:
+        mean = sum(rets) / len(rets)
+        var = sum((x - mean) ** 2 for x in rets) / (len(rets) - 1)
+        vol = math.sqrt(var) * math.sqrt(12) * 100
+    else:
+        vol = 0.0
+
+    stats = {
+        "ticker":       key,
+        "latest":       round(latest, 2),
+        "latest_date":  dates[-1],
+        "first_date":   dates[0],
+        "years":        round(len(closes) / 12, 1),
+        "ath":          round(ath, 2),
+        "atl":          round(atl, 2),
+        "pct_from_ath": round((latest / ath - 1.0) * 100, 1) if ath else 0.0,
+        "return_1y":    None if ret_over(12) is None else round(ret_over(12), 1),
+        "return_5y":    None if ret_over(60) is None else round(ret_over(60), 1),
+        "return_all":   round((latest / closes[0] - 1.0) * 100, 1) if closes[0] else 0.0,
+        "max_drawdown": round(max_dd * 100, 1),
+        "volatility":   round(vol, 1),
+        "spark":        _downsample(closes),
+    }
+    _CACHE[key] = (now, stats)
+    return stats
+
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# FILE: src/pipeline/aggregator.py
+# FILE: src/pipeline.py
 # ────────────────────────────────────────────────────────────────────────────
+
+"""pipeline — merged from 3 modules for a simpler layout."""
+from __future__ import annotations
+
+# ======================================================================
+# from pipeline/aggregator.py
+# ======================================================================
 
 """
 Per-ticker sentiment aggregator.
@@ -955,7 +2221,6 @@ Weighted average formula:
 If all weights are 0 (all articles neutral with score≈0) the simple mean is
 used as a fallback.
 """
-from __future__ import annotations
 import datetime
 import logging
 import math
@@ -969,8 +2234,8 @@ from config.settings import (
     TICKER_WINDOW_HOURS, MIN_ARTICLES_PER_TICKER, TIME_DECAY_HALFLIFE_HOURS,
     SOCIAL_SOURCES,
 )
-from src.storage.models import SentimentResult, TickerSentiment
-from src.sentiment.ticker_extractor import str_to_tickers
+from src.storage import SentimentResult, TickerSentiment
+from src.sentiment import str_to_tickers
 
 log = logging.getLogger(__name__)
 
@@ -1179,265 +2444,9 @@ def aggregate_tickers(db: Session) -> int:
     return updated
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/pipeline/crew.py
-# ────────────────────────────────────────────────────────────────────────────
-
-from __future__ import annotations
-import datetime
-import logging
-import os
-import re
-import time
-import concurrent.futures
-from typing import List
-
-from config.settings import GROQ_API_KEY, CREW_LLM_MODEL, E2E_DEADLINE, PIPELINE_INTERVAL
-from src.collectors import RSSCollector, ScraperCollector, BrokerCollector, StockTwitsCollector
-from src.sentiment import SentimentScorer
-from src.storage.models import Article, SentimentResult, init_db
-from src.pipeline.aggregator import aggregate_tickers
-
-log = logging.getLogger(__name__)
-
-# How far back to look when de-duplicating by headline text
-_TITLE_DEDUP_HOURS = 48
-
-_PUNCT_RE = re.compile(r"[^a-z0-9 ]+")
-_WS_RE    = re.compile(r"\s+")
-
-
-def _title_key(title: str) -> str:
-    """
-    Normalised headline used for cross-source de-duplication.
-
-    The same story arrives via Google News, Yahoo and the publisher's own feed
-    under three different URLs, so URL-only dedup let it through three times —
-    inflating message_density and every affected ticker's article_count.
-    """
-    return _WS_RE.sub(" ", _PUNCT_RE.sub("", (title or "").lower())).strip()
-
-
-def _make_crew():
-    """
-    Build a CrewAI crew that uses Groq's free tier (llama-3.1-8b-instant).
-    Returns None gracefully if crewai or groq are not installed / key missing.
-    """
-    if not GROQ_API_KEY or GROQ_API_KEY == "PASTE_YOUR_GROQ_KEY_HERE":
-        log.info("GROQ_API_KEY not set — narrative summaries disabled")
-        return None
-    try:
-        from crewai import Agent, Crew, Task, LLM
-    except ImportError:
-        log.warning("crewai not installed — narrative summaries disabled")
-        return None
-
-    llm = LLM(
-        model=CREW_LLM_MODEL,       # "groq/llama-3.1-8b-instant"
-        api_key=GROQ_API_KEY,
-    )
-
-    analyst = Agent(
-        role="Financial News Analyst",
-        goal=(
-            "Synthesize the top-ranked financial news items into a concise "
-            "market narrative. Highlight the strongest bullish and bearish signals."
-        ),
-        backstory=(
-            "You are a CFA-level analyst who distils real-time news into "
-            "actionable market intelligence in under 80 words."
-        ),
-        llm=llm,
-        verbose=False,
-    )
-
-    summarize_task = Task(
-        description=(
-            "Given these ranked news items (title | source | sentiment | rank), "
-            "write a market summary under 80 words:\n\n{ranked_items}"
-        ),
-        expected_output="A market narrative under 80 words.",
-        agent=analyst,
-    )
-
-    return Crew(agents=[analyst], tasks=[summarize_task], verbose=False)
-
-
-class SentimentCrew:
-    """
-    Runs the full pipeline every PIPELINE_INTERVAL seconds:
-      collect  →  deduplicate  →  score  →  persist  →  (optional) Groq narrative
-    """
-
-    def __init__(self):
-        self._rss        = RSSCollector()
-        self._scraper    = ScraperCollector()
-        self._broker     = BrokerCollector()
-        self._stocktwits = StockTwitsCollector()
-        self._scorer     = SentimentScorer()
-        self._db         = init_db()
-        self._crew       = _make_crew()
-
-    def run_cycle(self) -> List[SentimentResult]:
-        t0 = time.monotonic()
-        log.info("── Pipeline cycle started ──")
-
-        # 1. Collect from all sources in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            rss_f     = pool.submit(self._rss.collect)
-            scraper_f = pool.submit(self._scraper.collect)
-            broker_f  = pool.submit(self._broker.collect)
-            st_f      = pool.submit(self._stocktwits.collect)
-            rss_arts     = rss_f.result()
-            scraper_arts = scraper_f.result()
-            broker_arts  = broker_f.result()
-            st_arts      = st_f.result()
-
-        all_articles = rss_arts + scraper_arts + broker_arts + st_arts
-        log.info("Collected %d articles  (%.1fs)", len(all_articles), time.monotonic() - t0)
-
-        if not all_articles:
-            log.warning("No articles — skipping cycle")
-            return []
-
-        # 2. Deduplicate by URL *and* headline within this batch
-        seen: set[str] = set()
-        seen_titles: set[str] = set()
-        unique = []
-        for a in all_articles:
-            tkey = _title_key(a.title)
-            if not a.url or a.url in seen:
-                continue
-            if tkey and tkey in seen_titles:
-                continue
-            seen.add(a.url)
-            if tkey:
-                seen_titles.add(tkey)
-            unique.append(a)
-        log.info("After batch dedup: %d unique articles", len(unique))
-
-        # 3. Filter out URLs already in the database (cross-cycle dedup)
-        existing_urls: set[str] = {
-            row[0] for row in
-            self._db.query(SentimentResult.url)
-            .filter(SentimentResult.url.in_([a.url for a in unique]))
-            .all()
-        }
-        new_articles = [a for a in unique if a.url not in existing_urls]
-
-        # 3a. Drop stories already stored under a different URL (same headline
-        #     re-syndicated by another feed) within the recent window.
-        if new_articles:
-            since = datetime.datetime.utcnow() - datetime.timedelta(hours=_TITLE_DEDUP_HOURS)
-            recent_titles = {
-                _title_key(t)
-                for (t,) in self._db.query(SentimentResult.title)
-                                    .filter(SentimentResult.scored_at >= since)
-                                    .all()
-            }
-            recent_titles.discard("")
-            before = len(new_articles)
-            new_articles = [a for a in new_articles
-                            if _title_key(a.title) not in recent_titles]
-            if before != len(new_articles):
-                log.info("Dropped %d re-syndicated duplicates", before - len(new_articles))
-
-        log.info("New articles not yet in DB: %d", len(new_articles))
-
-        # 3b. Backfill images for existing rows that have none —
-        #     feeds re-serve the same articles, so the fresh fetch often has
-        #     an image the older DB row is missing.
-        fresh_imgs = {a.url: a.image_url for a in unique if a.image_url}
-        if existing_urls and fresh_imgs:
-            rows_missing_img = (
-                self._db.query(SentimentResult)
-                .filter(SentimentResult.url.in_(list(existing_urls)))
-                .filter((SentimentResult.image_url == "") | (SentimentResult.image_url.is_(None)))
-                .all()
-            )
-            filled = 0
-            for row in rows_missing_img:
-                img = fresh_imgs.get(row.url)
-                if img:
-                    row.image_url = img
-                    filled += 1
-            if filled:
-                self._db.commit()
-                log.info("Backfilled images on %d existing articles", filled)
-
-        if not new_articles:
-            # Still re-aggregate: composites carry live time decay and the
-            # stale-ticker sweep, both of which must keep moving even on a
-            # quiet cycle. Returning early here froze the board whenever the
-            # feeds had nothing new.
-            log.info("No new articles this cycle — re-aggregating only")
-            aggregate_tickers(self._db)
-            return []
-
-        # 4. Score sentiment
-        results = self._scorer.score_articles(new_articles, window_articles=all_articles)
-        log.info("Scored %d articles  (%.1fs)", len(results), time.monotonic() - t0)
-
-        # 5. Persist to SQLite.
-        #    The articles table was never written, so every SentimentResult
-        #    carried article_id = 0 and the article bodies were discarded after
-        #    scoring. Store the article first, then point the score at its id.
-        article_rows = [
-            Article(
-                source     = a.source,
-                title      = a.title,
-                url        = a.url,
-                published  = a.published,
-                body       = getattr(a, "body", "") or "",
-            )
-            for a in new_articles
-        ]
-        try:
-            self._db.add_all(article_rows)
-            self._db.flush()          # assigns primary keys without committing
-            for result, row in zip(results, article_rows):
-                result.article_id = row.id
-        except Exception as exc:
-            # Never let article bookkeeping cost us the sentiment scores
-            self._db.rollback()
-            log.warning("Article persistence failed (scores still saved): %s", exc)
-
-        self._db.add_all(results)
-        self._db.commit()
-
-        # 5b. Per-ticker aggregation (fast — pure DB read/upsert)
-        n_tickers = aggregate_tickers(self._db)
-        log.info("Ticker aggregation: %d tickers updated  (%.1fs)", n_tickers, time.monotonic() - t0)
-
-        # 6. Optional Groq narrative (only if budget allows)
-        elapsed     = time.monotonic() - t0
-        budget_left = E2E_DEADLINE - elapsed - 10
-        if self._crew and budget_left > 15:
-            top = sorted(results, key=lambda r: r.rank_score, reverse=True)[:10]
-            ranked_str = "\n".join(
-                f"{r.title[:70]} | {r.source} | {r.sentiment_score:.2f} | {r.rank_score:.2f}"
-                for r in top
-            )
-            try:
-                narrative = str(self._crew.kickoff(inputs={"ranked_items": ranked_str}))
-                log.info("Groq narrative: %s", narrative[:200])
-                os.makedirs("data", exist_ok=True)
-                with open("data/narrative.txt", "w") as f:
-                    f.write(narrative)
-            except Exception as exc:
-                log.warning("Groq narrative failed: %s", exc)
-
-        total = time.monotonic() - t0
-        log.info("Cycle done in %.1fs  (budget: %ds)", total, E2E_DEADLINE)
-        if total > E2E_DEADLINE:
-            log.error("E2E deadline exceeded: %.1fs > %ds", total, E2E_DEADLINE)
-
-        return results
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/pipeline/fundamentals.py
-# ────────────────────────────────────────────────────────────────────────────
+# ======================================================================
+# from pipeline/fundamentals.py
+# ======================================================================
 
 """
 Long-term fundamentals engine — Phases C & D.
@@ -1457,7 +2466,6 @@ Runs on a slow cadence (filings change a few times a day, not every minute):
 
 See docs/FUNDAMENTALS_PLAN.md.
 """
-from __future__ import annotations
 import datetime
 import logging
 
@@ -1469,10 +2477,10 @@ from config.settings import (
     USE_GROQ_SUMMARIES, REPORT_HISTORY_MAX_FILINGS,
     SIGNAL_BUY_THRESHOLD, SIGNAL_SELL_THRESHOLD,
 )
-from src.collectors.edgar_collector import EdgarCollector, LOOKBACK_DAYS
-from src.collectors.edgar_extractor import extract_section
+from src.collectors import EdgarCollector, LOOKBACK_DAYS
+from src.collectors import extract_section
 from src.sentiment import SentimentScorer
-from src.storage.models import Filing, TickerSentiment
+from src.storage import Filing, TickerSentiment
 
 log = logging.getLogger(__name__)
 
@@ -1760,7 +2768,7 @@ def _fetch_recom(ticker: str) -> float | None:
     if _finviz_fails["n"] >= 4:
         return None
     try:
-        from src.collectors.finviz_verify import verify
+        from src.collectors import verify
         data = verify(ticker)
         if data and data.get("recom") is not None:
             _finviz_fails["n"] = 0
@@ -1794,7 +2802,7 @@ def _aggregate(db: Session) -> None:
     momentum is part of the prediction (not display-only) so a stock that has
     actually risen isn't rated SELL off a single bad news week.
     """
-    from src.collectors.price_history import get_price_stats
+    from src.collectors import get_price_stats
 
     week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=LOOKBACK_DAYS)
 
@@ -1884,8 +2892,8 @@ def _signal_of(score: float) -> str:
 
 def _record_signals(db: Session) -> None:
     """Snapshot each ticker's current signal once per day."""
-    from src.collectors.price_history import get_price_stats
-    from src.storage.models import SignalHistory
+    from src.collectors import get_price_stats
+    from src.storage import SignalHistory
 
     today = datetime.datetime.utcnow().date()
     rows = db.query(TickerSentiment).filter(TickerSentiment.filing_count_7d > 0).all()
@@ -1926,8 +2934,8 @@ def _score_signals(db: Session) -> None:
     horizons: weekly (≥7 days old) and monthly (≥30 days old). Monthly uses
     slightly wider thresholds because prices move more over a month.
     """
-    from src.collectors.price_history import get_price_stats
-    from src.storage.models import SignalHistory
+    from src.collectors import get_price_stats
+    from src.storage import SignalHistory
 
     now = datetime.datetime.utcnow()
     week_cut  = now - datetime.timedelta(days=7)
@@ -1963,1378 +2971,875 @@ def _score_signals(db: Session) -> None:
     db.commit()
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/__init__.py
-# ────────────────────────────────────────────────────────────────────────────
+# ======================================================================
+# from pipeline/crew.py
+# ======================================================================
 
-from .rss_collector        import RSSCollector
-from .scraper_collector    import ScraperCollector
-from .broker_collector     import BrokerCollector
-from .stocktwits_collector import StockTwitsCollector
-
-__all__ = ["RSSCollector", "ScraperCollector", "BrokerCollector", "StockTwitsCollector"]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/broker_collector.py
-# ────────────────────────────────────────────────────────────────────────────
-
-"""
-Free-tier news collectors replacing the broker API feeds.
-
-  FinnhubCollector  — finnhub.io    (60 calls/min free, no credit card)
-  NewsAPICollector  — newsapi.org   (100 req/day free developer plan)
-
-Both are commonly used in student/academic finance projects.
-"""
-from __future__ import annotations
 import datetime
 import logging
+import os
+import re
+import time
+import concurrent.futures
 from typing import List
 
-import certifi
-import requests
-
-from config.settings import FINNHUB_API_KEY, NEWSAPI_KEY
-from .rss_collector import RawArticle
+from config.settings import GROQ_API_KEY, CREW_LLM_MODEL, E2E_DEADLINE, PIPELINE_INTERVAL
+from src.collectors import RSSCollector, ScraperCollector, BrokerCollector, StockTwitsCollector
+from src.sentiment import SentimentScorer
+from src.storage import Article, SentimentResult, init_db
 
 log = logging.getLogger(__name__)
 
+# How far back to look when de-duplicating by headline text
+_TITLE_DEDUP_HOURS = 48
 
-class FinnhubCollector:
+_PUNCT_RE = re.compile(r"[^a-z0-9 ]+")
+_WS_RE    = re.compile(r"\s+")
+
+
+def _title_key(title: str) -> str:
     """
-    Pulls general market news from Finnhub's free tier.
-    Sign up at finnhub.io — the API key is shown right on your dashboard.
+    Normalised headline used for cross-source de-duplication.
+
+    The same story arrives via Google News, Yahoo and the publisher's own feed
+    under three different URLs, so URL-only dedup let it through three times —
+    inflating message_density and every affected ticker's article_count.
     """
-
-    BASE_URL = "https://finnhub.io/api/v1"
-
-    def collect(self) -> List[RawArticle]:
-        if not FINNHUB_API_KEY or FINNHUB_API_KEY == "PASTE_YOUR_FINNHUB_KEY_HERE":
-            log.info("Finnhub key not set — skipping (add FINNHUB_API_KEY to .env)")
-            return []
-
-        articles: List[RawArticle] = []
-
-        # General market news (category: general, forex, crypto, merger)
-        for category in ("general", "merger"):
-            try:
-                resp = requests.get(
-                    f"{self.BASE_URL}/news",
-                    params={"category": category, "token": FINNHUB_API_KEY},
-                    timeout=10,
-                    verify=certifi.where(),
-                )
-                resp.raise_for_status()
-                for item in resp.json()[:30]:
-                    articles.append(RawArticle(
-                        source=f"finnhub_{category}",
-                        title=item.get("headline", ""),
-                        url=item.get("url", ""),
-                        body=item.get("summary", ""),
-                        published=datetime.datetime.utcfromtimestamp(
-                            item.get("datetime", 0) or 0
-                        ),
-                    ))
-            except Exception as exc:
-                log.warning("Finnhub [%s] error: %s", category, exc)
-
-        log.debug("Finnhub → %d articles", len(articles))
-        return articles
+    return _WS_RE.sub(" ", _PUNCT_RE.sub("", (title or "").lower())).strip()
 
 
-class NewsAPICollector:
+def _make_crew():
     """
-    Pulls financial headlines from NewsAPI's free developer plan.
-    Sign up at newsapi.org — you get 100 requests/day free.
+    Build a CrewAI crew that uses Groq's free tier (llama-3.1-8b-instant).
+    Returns None gracefully if crewai or groq are not installed / key missing.
     """
-
-    BASE_URL = "https://newsapi.org/v2"
-
-    QUERIES = [
-        "stock market",
-        "earnings report",
-        "federal reserve",
-        "IPO merger acquisition",
-    ]
-
-    def collect(self) -> List[RawArticle]:
-        if not NEWSAPI_KEY or NEWSAPI_KEY == "PASTE_YOUR_NEWSAPI_KEY_HERE":
-            log.info("NewsAPI key not set — skipping (add NEWSAPI_KEY to .env)")
-            return []
-
-        articles: List[RawArticle] = []
-        seen: set[str] = set()
-
-        for query in self.QUERIES:
-            try:
-                resp = requests.get(
-                    f"{self.BASE_URL}/everything",
-                    verify=certifi.where(),
-                    params={
-                        "q":        query,
-                        "language": "en",
-                        "sortBy":   "publishedAt",
-                        "pageSize": 10,
-                        "apiKey":   NEWSAPI_KEY,
-                    },
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                for item in resp.json().get("articles", []):
-                    url = item.get("url", "")
-                    if url in seen:
-                        continue
-                    seen.add(url)
-                    articles.append(RawArticle(
-                        source="newsapi",
-                        title=item.get("title", "") or "",
-                        url=url,
-                        body=item.get("description", "") or "",
-                        published=_parse_newsapi_date(item.get("publishedAt")),
-                    ))
-            except Exception as exc:
-                log.warning("NewsAPI [%s] error: %s", query, exc)
-
-        log.debug("NewsAPI → %d articles", len(articles))
-        return articles
-
-
-def _parse_newsapi_date(s: str | None) -> datetime.datetime:
-    if not s:
-        return datetime.datetime.utcnow()
+    if not GROQ_API_KEY or GROQ_API_KEY == "PASTE_YOUR_GROQ_KEY_HERE":
+        log.info("GROQ_API_KEY not set — narrative summaries disabled")
+        return None
     try:
-        return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        return datetime.datetime.utcnow()
+        from crewai import Agent, Crew, Task, LLM
+    except ImportError:
+        log.warning("crewai not installed — narrative summaries disabled")
+        return None
+
+    llm = LLM(
+        model=CREW_LLM_MODEL,       # "groq/llama-3.1-8b-instant"
+        api_key=GROQ_API_KEY,
+    )
+
+    analyst = Agent(
+        role="Financial News Analyst",
+        goal=(
+            "Synthesize the top-ranked financial news items into a concise "
+            "market narrative. Highlight the strongest bullish and bearish signals."
+        ),
+        backstory=(
+            "You are a CFA-level analyst who distils real-time news into "
+            "actionable market intelligence in under 80 words."
+        ),
+        llm=llm,
+        verbose=False,
+    )
+
+    summarize_task = Task(
+        description=(
+            "Given these ranked news items (title | source | sentiment | rank), "
+            "write a market summary under 80 words:\n\n{ranked_items}"
+        ),
+        expected_output="A market narrative under 80 words.",
+        agent=analyst,
+    )
+
+    return Crew(agents=[analyst], tasks=[summarize_task], verbose=False)
 
 
-class BrokerCollector:
-    """Wraps all free-tier API collectors under one interface."""
+class SentimentCrew:
+    """
+    Runs the full pipeline every PIPELINE_INTERVAL seconds:
+      collect  →  deduplicate  →  score  →  persist  →  (optional) Groq narrative
+    """
 
     def __init__(self):
-        self._finnhub  = FinnhubCollector()
-        self._newsapi  = NewsAPICollector()
+        self._rss        = RSSCollector()
+        self._scraper    = ScraperCollector()
+        self._broker     = BrokerCollector()
+        self._stocktwits = StockTwitsCollector()
+        self._scorer     = SentimentScorer()
+        self._db         = init_db()
+        self._crew       = _make_crew()
 
-    def collect(self, tickers: list[str] | None = None) -> List[RawArticle]:
-        articles = []
-        articles.extend(self._finnhub.collect())
-        articles.extend(self._newsapi.collect())
-        return articles
+    def run_cycle(self) -> List[SentimentResult]:
+        t0 = time.monotonic()
+        log.info("── Pipeline cycle started ──")
 
+        # 1. Collect from all sources in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            rss_f     = pool.submit(self._rss.collect)
+            scraper_f = pool.submit(self._scraper.collect)
+            broker_f  = pool.submit(self._broker.collect)
+            st_f      = pool.submit(self._stocktwits.collect)
+            rss_arts     = rss_f.result()
+            scraper_arts = scraper_f.result()
+            broker_arts  = broker_f.result()
+            st_arts      = st_f.result()
 
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/edgar_collector.py
-# ────────────────────────────────────────────────────────────────────────────
+        all_articles = rss_arts + scraper_arts + broker_arts + st_arts
+        log.info("Collected %d articles  (%.1fs)", len(all_articles), time.monotonic() - t0)
 
-"""
-SEC EDGAR filings collector — Phase A of the long-term fundamentals engine.
-
-Pulls each tracked ticker's recent official filings (10-K annual, 10-Q earnings,
-8-K contract/event) from the **free** SEC EDGAR APIs (no key required) and
-returns them as RawFiling records for storage + scoring in later phases.
-
-Free endpoints used (SEC asks for a descriptive User-Agent and <=10 req/sec):
-  - ticker->CIK map:  https://www.sec.gov/files/company_tickers.json
-  - filing history:   https://data.sec.gov/submissions/CIK##########.json
-  - the document:     https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}
-
-See docs/FUNDAMENTALS_PLAN.md for the full design.
-"""
-from __future__ import annotations
-import datetime
-import logging
-import time
-from dataclasses import dataclass, field
-from typing import Iterable
-
-import requests
-
-log = logging.getLogger(__name__)
-
-# SEC requires a real, descriptive User-Agent (their fair-access policy).
-_HEADERS = {
-    "User-Agent": "SentimentIQ Research (academic project; shp5246@psu.edu)",
-    "Accept-Encoding": "gzip, deflate",
-}
-
-_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
-_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
-
-# Form type -> our long-term section category
-_FORM_KIND = {
-    "10-K":  "annual",
-    "10-K/A":"annual",
-    "10-Q":  "earnings",
-    "10-Q/A":"earnings",
-    "8-K":   "contract",   # 8-Ks include material agreements / earnings releases
-    "8-K/A": "contract",
-}
-
-# Rolling window for "long-term, within 1 week" signal
-LOOKBACK_DAYS = 7
-
-
-@dataclass
-class RawFiling:
-    cik:          str
-    ticker:       str
-    form_type:    str
-    section_kind: str
-    filed_at:     datetime.datetime
-    accession:    str
-    url:          str
-    title:        str = ""
-
-
-class EdgarCollector:
-    """Fetches recent 10-K / 10-Q / 8-K filings for a set of tickers."""
-
-    def __init__(self, lookback_days: int = LOOKBACK_DAYS):
-        self.lookback_days = lookback_days
-        self._cik_map: dict[str, str] | None = None     # TICKER -> 10-digit CIK
-        self._map_loaded_at: float = 0.0
-
-    # ── ticker -> CIK map (cached ~24h) ────────────────────────────────────────
-    def _load_cik_map(self) -> dict[str, str]:
-        if self._cik_map is not None and (time.time() - self._map_loaded_at) < 86400:
-            return self._cik_map
-        try:
-            resp = requests.get(_TICKER_MAP_URL, headers=_HEADERS, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            log.warning("EDGAR ticker map fetch failed: %s", exc)
-            return self._cik_map or {}
-
-        # data is {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
-        mapping: dict[str, str] = {}
-        for row in data.values():
-            tic = str(row.get("ticker", "")).upper()
-            cik = str(row.get("cik_str", "")).zfill(10)
-            if tic:
-                mapping[tic] = cik
-        self._cik_map = mapping
-        self._map_loaded_at = time.time()
-        log.info("EDGAR ticker->CIK map loaded (%d companies)", len(mapping))
-        return mapping
-
-    # ── recent filings for one ticker ──────────────────────────────────────────
-    def _filings_for_ticker(self, ticker: str, cik: str,
-                            cutoff: datetime.datetime) -> list[RawFiling]:
-        url = _SUBMISSIONS_URL.format(cik10=cik)
-        try:
-            resp = requests.get(url, headers=_HEADERS, timeout=15)
-            if resp.status_code != 200:
-                return []
-            recent = resp.json().get("filings", {}).get("recent", {})
-        except Exception as exc:
-            log.debug("EDGAR submissions failed [%s]: %s", ticker, exc)
+        if not all_articles:
+            log.warning("No articles — skipping cycle")
             return []
 
-        forms      = recent.get("form", [])
-        dates      = recent.get("filingDate", [])
-        accessions = recent.get("accessionNumber", [])
-        primaries  = recent.get("primaryDocument", [])
-        titles     = recent.get("primaryDocDescription", [])
+        # 2. Deduplicate by URL *and* headline within this batch
+        seen: set[str] = set()
+        seen_titles: set[str] = set()
+        unique = []
+        for a in all_articles:
+            tkey = _title_key(a.title)
+            if not a.url or a.url in seen:
+                continue
+            if tkey and tkey in seen_titles:
+                continue
+            seen.add(a.url)
+            if tkey:
+                seen_titles.add(tkey)
+            unique.append(a)
+        log.info("After batch dedup: %d unique articles", len(unique))
 
-        out: list[RawFiling] = []
-        cik_int = str(int(cik))   # Archives path uses the un-padded CIK
-        for i, form in enumerate(forms):
-            if form not in _FORM_KIND:
-                continue
-            try:
-                filed = datetime.datetime.strptime(dates[i], "%Y-%m-%d")
-            except (ValueError, IndexError):
-                continue
-            if filed < cutoff:
-                continue
-            acc = accessions[i]
-            acc_nodash = acc.replace("-", "")
-            doc = primaries[i] if i < len(primaries) else ""
-            doc_url = (
-                f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_nodash}/{doc}"
-                if doc else
-                f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}"
+        # 3. Filter out URLs already in the database (cross-cycle dedup)
+        existing_urls: set[str] = {
+            row[0] for row in
+            self._db.query(SentimentResult.url)
+            .filter(SentimentResult.url.in_([a.url for a in unique]))
+            .all()
+        }
+        new_articles = [a for a in unique if a.url not in existing_urls]
+
+        # 3a. Drop stories already stored under a different URL (same headline
+        #     re-syndicated by another feed) within the recent window.
+        if new_articles:
+            since = datetime.datetime.utcnow() - datetime.timedelta(hours=_TITLE_DEDUP_HOURS)
+            recent_titles = {
+                _title_key(t)
+                for (t,) in self._db.query(SentimentResult.title)
+                                    .filter(SentimentResult.scored_at >= since)
+                                    .all()
+            }
+            recent_titles.discard("")
+            before = len(new_articles)
+            new_articles = [a for a in new_articles
+                            if _title_key(a.title) not in recent_titles]
+            if before != len(new_articles):
+                log.info("Dropped %d re-syndicated duplicates", before - len(new_articles))
+
+        log.info("New articles not yet in DB: %d", len(new_articles))
+
+        # 3b. Backfill images for existing rows that have none —
+        #     feeds re-serve the same articles, so the fresh fetch often has
+        #     an image the older DB row is missing.
+        fresh_imgs = {a.url: a.image_url for a in unique if a.image_url}
+        if existing_urls and fresh_imgs:
+            rows_missing_img = (
+                self._db.query(SentimentResult)
+                .filter(SentimentResult.url.in_(list(existing_urls)))
+                .filter((SentimentResult.image_url == "") | (SentimentResult.image_url.is_(None)))
+                .all()
             )
-            out.append(RawFiling(
-                cik=cik, ticker=ticker, form_type=form,
-                section_kind=_FORM_KIND[form], filed_at=filed,
-                accession=acc, url=doc_url,
-                title=(titles[i] if i < len(titles) else "") or form,
-            ))
-        return out
+            filled = 0
+            for row in rows_missing_img:
+                img = fresh_imgs.get(row.url)
+                if img:
+                    row.image_url = img
+                    filled += 1
+            if filled:
+                self._db.commit()
+                log.info("Backfilled images on %d existing articles", filled)
 
-    # ── all-time report history (10-K / 10-Q) for one ticker ──────────────────
-    def collect_history(self, ticker: str, max_filings: int = 16) -> list[RawFiling]:
-        """
-        The company's report history going back years — 10-K annual reports and
-        10-Q earnings reports, newest first, capped at max_filings. Same free
-        submissions JSON as collect(); no extra API, no key.
-        """
-        cik_map = self._load_cik_map()
-        tic = str(ticker).upper().lstrip("$")
-        cik = cik_map.get(tic)
-        if not cik:
+        if not new_articles:
+            # Still re-aggregate: composites carry live time decay and the
+            # stale-ticker sweep, both of which must keep moving even on a
+            # quiet cycle. Returning early here froze the board whenever the
+            # feeds had nothing new.
+            log.info("No new articles this cycle — re-aggregating only")
+            aggregate_tickers(self._db)
             return []
-        url = _SUBMISSIONS_URL.format(cik10=cik)
+
+        # 4. Score sentiment
+        results = self._scorer.score_articles(new_articles, window_articles=all_articles)
+        log.info("Scored %d articles  (%.1fs)", len(results), time.monotonic() - t0)
+
+        # 5. Persist to SQLite.
+        #    The articles table was never written, so every SentimentResult
+        #    carried article_id = 0 and the article bodies were discarded after
+        #    scoring. Store the article first, then point the score at its id.
+        article_rows = [
+            Article(
+                source     = a.source,
+                title      = a.title,
+                url        = a.url,
+                published  = a.published,
+                body       = getattr(a, "body", "") or "",
+            )
+            for a in new_articles
+        ]
         try:
-            resp = requests.get(url, headers=_HEADERS, timeout=15)
-            if resp.status_code != 200:
-                return []
-            recent = resp.json().get("filings", {}).get("recent", {})
+            self._db.add_all(article_rows)
+            self._db.flush()          # assigns primary keys without committing
+            for result, row in zip(results, article_rows):
+                result.article_id = row.id
         except Exception as exc:
-            log.debug("EDGAR history failed [%s]: %s", tic, exc)
-            return []
+            # Never let article bookkeeping cost us the sentiment scores
+            self._db.rollback()
+            log.warning("Article persistence failed (scores still saved): %s", exc)
 
-        forms      = recent.get("form", [])
-        dates      = recent.get("filingDate", [])
-        accessions = recent.get("accessionNumber", [])
-        primaries  = recent.get("primaryDocument", [])
-        titles     = recent.get("primaryDocDescription", [])
+        self._db.add_all(results)
+        self._db.commit()
 
-        out: list[RawFiling] = []
-        cik_int = str(int(cik))
-        for i, form in enumerate(forms):
-            if form not in ("10-K", "10-Q"):
-                continue
+        # 5b. Per-ticker aggregation (fast — pure DB read/upsert)
+        n_tickers = aggregate_tickers(self._db)
+        log.info("Ticker aggregation: %d tickers updated  (%.1fs)", n_tickers, time.monotonic() - t0)
+
+        # 6. Optional Groq narrative (only if budget allows)
+        elapsed     = time.monotonic() - t0
+        budget_left = E2E_DEADLINE - elapsed - 10
+        if self._crew and budget_left > 15:
+            top = sorted(results, key=lambda r: r.rank_score, reverse=True)[:10]
+            ranked_str = "\n".join(
+                f"{r.title[:70]} | {r.source} | {r.sentiment_score:.2f} | {r.rank_score:.2f}"
+                for r in top
+            )
             try:
-                filed = datetime.datetime.strptime(dates[i], "%Y-%m-%d")
-            except (ValueError, IndexError):
-                continue
-            acc = accessions[i]
-            doc = primaries[i] if i < len(primaries) else ""
-            if not doc:
-                continue
-            out.append(RawFiling(
-                cik=cik, ticker=tic, form_type=form,
-                section_kind=_FORM_KIND[form], filed_at=filed,
-                accession=acc,
-                url=f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc.replace('-','')}/{doc}",
-                title=(titles[i] if i < len(titles) else "") or form,
-            ))
-            if len(out) >= max_filings:
-                break
-        return out
+                narrative = str(self._crew.kickoff(inputs={"ranked_items": ranked_str}))
+                log.info("Groq narrative: %s", narrative[:200])
+                os.makedirs("data", exist_ok=True)
+                with open("data/narrative.txt", "w") as f:
+                    f.write(narrative)
+            except Exception as exc:
+                log.warning("Groq narrative failed: %s", exc)
 
-    # ── public API ─────────────────────────────────────────────────────────────
-    def collect(self, tickers: Iterable[str]) -> list[RawFiling]:
-        cik_map = self._load_cik_map()
-        if not cik_map:
-            return []
-        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=self.lookback_days)
+        total = time.monotonic() - t0
+        log.info("Cycle done in %.1fs  (budget: %ds)", total, E2E_DEADLINE)
+        if total > E2E_DEADLINE:
+            log.error("E2E deadline exceeded: %.1fs > %ds", total, E2E_DEADLINE)
 
-        results: list[RawFiling] = []
-        seen_ciks: set[str] = set()
-        for raw_tic in tickers:
-            tic = str(raw_tic).upper().lstrip("$")
-            cik = cik_map.get(tic)
-            if not cik or cik in seen_ciks:
-                continue
-            seen_ciks.add(cik)
-            results.extend(self._filings_for_ticker(tic, cik, cutoff))
-            time.sleep(0.12)   # be polite: well under SEC's 10 req/sec limit
-
-        log.info("EDGAR: %d filings in last %dd across %d tickers",
-                 len(results), self.lookback_days, len(seen_ciks))
         return results
 
 
+
 # ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/edgar_extractor.py
+# FILE: src/sentiment.py
 # ────────────────────────────────────────────────────────────────────────────
 
-"""
-SEC filing section extractor — Phase B of the long-term fundamentals engine.
-
-Filings are huge (a 10-K can be 300+ pages), so we download the primary document
-and pull only the high-signal sections per form type:
-
-  10-K (annual)   -> Risk Factors (Item 1A) + MD&A (Item 7)
-  10-Q (earnings) -> MD&A (Item 2) + results-of-operations text
-  8-K  (contract) -> Item 1.01 material agreement / Item 2.02 results / body
-
-Everything is capped to a few thousand characters before scoring so FinBERT and
-Groq stay fast and within the free tier. Pure stdlib + BeautifulSoup (free).
-"""
+"""sentiment — merged from 5 modules for a simpler layout."""
 from __future__ import annotations
+
+# ======================================================================
+# from sentiment/finbert.py
+# ======================================================================
+
 import logging
-import re
-
-import requests
-from bs4 import BeautifulSoup
-
-log = logging.getLogger(__name__)
-
-_HEADERS = {
-    "User-Agent": "SentimentIQ Research (academic project; shp5246@psu.edu)",
-    "Accept-Encoding": "gzip, deflate",
-}
-
-MAX_CHARS = 6000   # cap fed to scoring per filing
-
-# Anchor phrases that mark the start of high-signal sections, by section kind.
-_ANCHORS = {
-    "annual": [
-        "risk factors",
-        "management's discussion and analysis",
-        "management’s discussion and analysis",
-    ],
-    "earnings": [
-        "management's discussion and analysis",
-        "management’s discussion and analysis",
-        "results of operations",
-    ],
-    "contract": [
-        "item 1.01",
-        "entry into a material definitive agreement",
-        "item 2.02",
-        "results of operations and financial condition",
-    ],
-}
-
-
-def _clean_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "table"]):
-        tag.decompose()
-    text = soup.get_text(separator=" ")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def _slice_around_anchors(text: str, kind: str) -> str:
-    """Return text starting at the first matching section anchor, capped."""
-    low = text.lower()
-    best = None
-    for anchor in _ANCHORS.get(kind, []):
-        idx = low.find(anchor)
-        # Skip a hit that's only in the table of contents (very early in doc)
-        if idx != -1 and idx > 500:
-            best = idx if best is None else min(best, idx)
-    if best is not None:
-        return text[best : best + MAX_CHARS]
-    # Fallback: skip the cover page, take the first substantive chunk
-    return text[500 : 500 + MAX_CHARS]
-
-
-def extract_section(url: str, section_kind: str) -> str:
-    """
-    Download a filing's primary document and return the high-signal section text
-    for scoring. Returns "" on any failure (caller skips gracefully).
-    """
-    try:
-        resp = requests.get(url, headers=_HEADERS, timeout=20)
-        if resp.status_code != 200 or not resp.text:
-            return ""
-    except Exception as exc:
-        log.debug("Filing fetch failed [%s]: %s", url, exc)
-        return ""
-
-    text = _clean_text(resp.text)
-    if len(text) < 200:
-        return ""
-    return _slice_around_anchors(text, section_kind)
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/finviz_screener.py
-# ────────────────────────────────────────────────────────────────────────────
-
-"""
-Finviz screener CSV loader.
-
-The brief: "A CSV file is extracted via an existing screener on Finviz." Finviz
-(Elite) lets you export a screener's results as a CSV — a "Ticker" column plus
-whatever fields the screener shows. Drop that export at data/finviz_screener.csv
-(or point FINVIZ_SCREENER_CSV at it) and the tracked ticker universe picks it up
-automatically. When no CSV is present we fall back to the built-in universe, so
-nothing breaks before your Finviz credentials arrive.
-
-Pure stdlib (csv) — free, no Finviz API or login needed to READ an export.
-"""
-from __future__ import annotations
-import csv
-import logging
-import os
-
-log = logging.getLogger(__name__)
-
-# Where the Finviz screener export is expected. Override with the env var.
-DEFAULT_CSV = os.getenv("FINVIZ_SCREENER_CSV", "data/finviz_screener.csv")
-
-# Finviz's export header is "Ticker"; accept a couple of common variants.
-_TICKER_COLS = {"ticker", "symbol", "tickers"}
-
-
-def _looks_like_ticker(t: str) -> bool:
-    # 1–6 chars, letters/digits with an optional . or - (e.g. BRK.B, RDS-A)
-    return bool(t) and len(t) <= 6 and t.replace(".", "").replace("-", "").isalnum()
-
-
-def load_screener_tickers(path: str | None = None) -> set[str]:
-    """
-    Return the set of tickers from a Finviz screener CSV export.
-    Empty set when the file is missing or unreadable (caller falls back).
-    """
-    path = path or DEFAULT_CSV
-    if not path or not os.path.isfile(path):
-        return set()
-
-    out: set[str] = set()
-    try:
-        # utf-8-sig strips the BOM Finviz sometimes prepends.
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            col = next((name for name in (reader.fieldnames or [])
-                        if name and name.strip().lower() in _TICKER_COLS), None)
-            if col is None:
-                log.warning("Finviz CSV %s has no Ticker/Symbol column (%s)",
-                            path, reader.fieldnames)
-                return set()
-            for row in reader:
-                t = (row.get(col) or "").strip().upper()
-                if _looks_like_ticker(t):
-                    out.add(t)
-    except Exception as exc:  # noqa: BLE001 — never break startup on a bad file
-        log.warning("Finviz screener CSV load failed (%s): %s", path, exc)
-        return set()
-
-    log.info("Finviz screener CSV: loaded %d tickers from %s", len(out), path)
-    return out
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/finviz_verify.py
-# ────────────────────────────────────────────────────────────────────────────
-
-"""
-Finviz cross-check — verify a prediction against an independent source.
-
-Fetches the free Finviz quote page for a ticker and pulls the data points a
-user can check our BUY/SELL/HOLD signal against:
-  - analyst recommendation (Finviz "Recom", 1=Strong Buy … 5=Strong Sell)
-  - analyst price target (+ implied upside vs current price)
-  - actual recent performance (week / month / year / YTD)
-
-We compare our signal to the analyst consensus and report AGREE / MIXED /
-DISAGREE, so the prediction can be independently validated. Finviz is one of
-the project's sanctioned sources; we fetch politely (real User-Agent, cached
-~30 min, low volume) and degrade gracefully if the page is unavailable.
-"""
-from __future__ import annotations
-import re
-import time
-
-import requests
-
-_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-_URL = "https://finviz.com/quote.ashx?t={t}"
-_CACHE: dict[str, tuple[float, dict]] = {}
-_TTL = 1800   # 30 min
-
-_FIELDS = ["Price", "Recom", "Target Price",
-           "Perf Week", "Perf Month", "Perf Year", "Perf YTD"]
-
-
-def _grab(html: str, label: str) -> str | None:
-    i = html.find(f">{label}</a>")
-    if i == -1:
-        i = html.find(f">{label}<")
-    if i == -1:
-        return None
-    j = html.find("snapshot-td-content", i)
-    if j == -1:
-        return None
-    chunk = html[j:html.find("</div>", j)]
-    text = re.sub(r"<[^>]+>", "", chunk).replace('snapshot-td-content"', "").strip(' ">')
-    return text or None
-
-
-def _num(s: str | None) -> float | None:
-    if not s:
-        return None
-    try:
-        return float(s.replace("%", "").replace("$", "").replace(",", ""))
-    except ValueError:
-        return None
-
-
-def _recom_to_signal(recom: float | None) -> str | None:
-    """Finviz Recom 1..5 → analyst consensus as BUY/HOLD/SELL."""
-    if recom is None:
-        return None
-    if recom <= 2.5:
-        return "BUY"
-    if recom >= 3.5:
-        return "SELL"
-    return "HOLD"
-
-
-def _agreement(ours: str, theirs: str | None) -> str:
-    if theirs is None:
-        return "UNKNOWN"
-    if ours == theirs:
-        return "AGREE"
-    # one side neutral, the other directional
-    if "HOLD" in (ours, theirs):
-        return "MIXED"
-    return "DISAGREE"   # BUY vs SELL
-
-
-def verify(ticker: str, our_signal: str = "") -> dict | None:
-    """
-    Cross-check our signal against Finviz for one ticker.
-    Returns a dict of the Finviz data + agreement verdict, or None on failure.
-    """
-    key = ticker.upper().lstrip("$")
-    now = time.time()
-    if key in _CACHE and (now - _CACHE[key][0]) < _TTL:
-        data = dict(_CACHE[key][1])
-    else:
-        try:
-            resp = requests.get(_URL.format(t=key), headers={"User-Agent": _UA},
-                                timeout=15, allow_redirects=True)
-            if resp.status_code != 200 or "snapshot-td-content" not in resp.text:
-                return None
-            html = resp.text
-        except Exception:
-            return None
-
-        raw = {f: _grab(html, f) for f in _FIELDS}
-        price  = _num(raw.get("Price"))
-        recom  = _num(raw.get("Recom"))
-        target = _num(raw.get("Target Price"))
-        upside = round((target / price - 1.0) * 100, 1) if (target and price) else None
-        data = {
-            "ticker":         key,
-            "price":          price,
-            "recom":          recom,
-            "recom_signal":   _recom_to_signal(recom),
-            "target":         target,
-            "target_upside":  upside,
-            "perf_week":      raw.get("Perf Week"),
-            "perf_month":     raw.get("Perf Month"),
-            "perf_year":      raw.get("Perf Year"),
-            "perf_ytd":       raw.get("Perf YTD"),
-            "source_url":     f"https://finviz.com/quote.ashx?t={key}",
-            "checked_at":     time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now)),
-        }
-        _CACHE[key] = (now, dict(data))
-
-    if our_signal:
-        data["our_signal"] = our_signal.upper()
-        data["agreement"] = _agreement(our_signal.upper(), data.get("recom_signal"))
-    return data
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/price_history.py
-# ────────────────────────────────────────────────────────────────────────────
-
-"""
-All-time price history + reliability stats — free, no API key.
-
-Source: Yahoo Finance via the `yfinance` library (free, handles Yahoo's session
-cookie/crumb). We pull full monthly history (period="max") — light and fast,
-and plenty of resolution for a long-term reliability view.
-
-We turn that history into the "is this stock reliable?" stats a long-term
-investor wants: all-time high/low, distance from the peak, 1-year / 5-year /
-all-time returns, max drawdown, annualized volatility, plus a sparkline.
-
-Results are cached in-memory for a few hours (history barely changes intraday
-and we stay polite to Yahoo).
-"""
-from __future__ import annotations
-import logging
-import math
-import time
-
-log = logging.getLogger(__name__)
-
-_CACHE: dict[str, tuple[float, dict]] = {}     # ticker -> (fetched_at, stats)
-_NEG_CACHE: dict[str, float] = {}              # ticker -> when we last got nothing
-_TTL = 6 * 3600                                # 6 hours
-_NEG_TTL = 1800                                # don't re-hit a dead ticker for 30 min
-_SPARK_POINTS = 64
-
-
-def _downsample(closes: list[float], n: int = _SPARK_POINTS) -> list[float]:
-    if len(closes) <= n:
-        return [round(c, 2) for c in closes]
-    step = len(closes) / n
-    return [round(closes[min(int(i * step), len(closes) - 1)], 2) for i in range(n)]
-
-
-def _fetch_closes(ticker: str) -> tuple[list[str], list[float]]:
-    """Return (dates, monthly closes) oldest→newest, or ([],[]) on failure."""
-    try:
-        import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="max", interval="1mo", auto_adjust=True)
-    except Exception as exc:
-        log.debug("yfinance failed [%s]: %s", ticker, exc)
-        return [], []
-    if hist is None or hist.empty or "Close" not in hist:
-        return [], []
-    closes, dates = [], []
-    for idx, val in hist["Close"].items():
-        try:
-            c = float(val)
-        except (TypeError, ValueError):
-            continue
-        if c > 0 and not math.isnan(c):
-            closes.append(c)
-            dates.append(idx.date().isoformat())
-    return dates, closes
-
-
-_CANDLE_CACHE: dict[str, tuple[float, list]] = {}
-_CANDLE_TTL = 1800   # 30 min — daily candles barely move intraday
-
-
-def get_candles(ticker: str, days: int = 520) -> list[dict]:
-    """
-    Daily OHLC candles for the candlestick chart (free, via yfinance). Pulls ~2
-    years so the chart can zoom across timeframes (1M/3M/6M/1Y/2Y) client-side.
-    Returns [{d, o, h, l, c}, ...] oldest→newest, or [] on failure.
-    """
-    key = ticker.upper().lstrip("$")
-    now = time.time()
-    if key in _CANDLE_CACHE and (now - _CANDLE_CACHE[key][0]) < _CANDLE_TTL:
-        return _CANDLE_CACHE[key][1]
-    try:
-        import yfinance as yf
-        hist = yf.Ticker(key).history(period="2y", interval="1d", auto_adjust=True)
-    except Exception as exc:
-        log.debug("yfinance candles failed [%s]: %s", key, exc)
-        return []
-    if hist is None or hist.empty:
-        return []
-    out: list[dict] = []
-    for idx, row in hist.iterrows():
-        try:
-            o, h, l, c = (float(row["Open"]), float(row["High"]),
-                          float(row["Low"]), float(row["Close"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if any(map(math.isnan, (o, h, l, c))) or c <= 0:
-            continue
-        out.append({"d": idx.date().isoformat(),
-                    "o": round(o, 2), "h": round(h, 2),
-                    "l": round(l, 2), "c": round(c, 2)})
-    out = out[-days:]
-    _CANDLE_CACHE[key] = (now, out)
-    return out
-
-
-def get_price_stats(ticker: str) -> dict | None:
-    """All-time reliability stats for a ticker, or None if no data."""
-    key = ticker.upper().lstrip("$")
-    now = time.time()
-    if key in _CACHE and (now - _CACHE[key][0]) < _TTL:
-        return _CACHE[key][1]
-    if key in _NEG_CACHE and (now - _NEG_CACHE[key]) < _NEG_TTL:
-        return None
-
-    dates, closes = _fetch_closes(key)
-    if len(closes) < 12:
-        _NEG_CACHE[key] = now
-        return None
-
-    latest = closes[-1]
-    ath    = max(closes)
-    atl    = min(closes)
-
-    def ret_over(months: int) -> float | None:
-        if len(closes) <= months:
-            return None
-        past = closes[-months - 1]
-        return (latest / past - 1.0) * 100 if past else None
-
-    # max drawdown on monthly closes (largest peak-to-trough drop)
-    peak = closes[0]; max_dd = 0.0
-    for c in closes:
-        peak = max(peak, c)
-        if peak:
-            max_dd = min(max_dd, (c / peak - 1.0))
-
-    # annualized volatility from monthly returns (×√12)
-    rets = [(closes[i] / closes[i - 1] - 1.0) for i in range(1, len(closes)) if closes[i - 1]]
-    if len(rets) > 1:
-        mean = sum(rets) / len(rets)
-        var = sum((x - mean) ** 2 for x in rets) / (len(rets) - 1)
-        vol = math.sqrt(var) * math.sqrt(12) * 100
-    else:
-        vol = 0.0
-
-    stats = {
-        "ticker":       key,
-        "latest":       round(latest, 2),
-        "latest_date":  dates[-1],
-        "first_date":   dates[0],
-        "years":        round(len(closes) / 12, 1),
-        "ath":          round(ath, 2),
-        "atl":          round(atl, 2),
-        "pct_from_ath": round((latest / ath - 1.0) * 100, 1) if ath else 0.0,
-        "return_1y":    None if ret_over(12) is None else round(ret_over(12), 1),
-        "return_5y":    None if ret_over(60) is None else round(ret_over(60), 1),
-        "return_all":   round((latest / closes[0] - 1.0) * 100, 1) if closes[0] else 0.0,
-        "max_drawdown": round(max_dd * 100, 1),
-        "volatility":   round(vol, 1),
-        "spark":        _downsample(closes),
-    }
-    _CACHE[key] = (now, stats)
-    return stats
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/rss_collector.py
-# ────────────────────────────────────────────────────────────────────────────
-
-from __future__ import annotations
-import asyncio
-import datetime
-import logging
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
-import ssl
-import aiohttp
-import certifi
-import feedparser
-
-_SSL = ssl.create_default_context(cafile=certifi.where())
-
-from config.settings import RSS_FEEDS, MAX_ARTICLES_PER_SOURCE
+from config.settings import FINBERT_MODEL, SENTIMENT_BATCH, FINBERT_MIN_CONF
 
 log = logging.getLogger(__name__)
-
-# ── Google News URL decoding ──────────────────────────────────────────────────
-# Google News RSS links are redirects (news.google.com/rss/articles/...).
-# They hide the real article URL, which breaks OG-image scraping and gives
-# users an ugly redirect. Google's own batchexecute endpoint decodes them.
-# Cache: encoded URL → decoded URL, so each article is decoded exactly once
-# per process lifetime.
-_GN_CACHE: dict[str, str] = {}
-_GN_SEMAPHORE = asyncio.Semaphore(8)
-_GN_SIG_RE = re.compile(r'data-n-a-sg="([^"]+)"')
-_GN_TS_RE  = re.compile(r'data-n-a-ts="([^"]+)"')
-_GN_ID_RE  = re.compile(r"/articles/([^?]+)")
-_GN_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-          "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-
-
-async def _decode_gnews_url(session: aiohttp.ClientSession, article: "RawArticle") -> None:
-    """Resolve a news.google.com redirect to the real article URL (in place)."""
-    enc = article.url
-    if enc in _GN_CACHE:
-        if _GN_CACHE[enc]:
-            article.url = _GN_CACHE[enc]
-        return
-
-    async with _GN_SEMAPHORE:
-        try:
-            async with session.get(enc, timeout=aiohttp.ClientTimeout(total=8),
-                                   headers={"User-Agent": _GN_UA}) as resp:
-                page = await resp.text()
-            sig = _GN_SIG_RE.search(page)
-            ts  = _GN_TS_RE.search(page)
-            gn_id = _GN_ID_RE.search(enc)
-            if not (sig and ts and gn_id):
-                _GN_CACHE[enc] = ""
-                return
-            payload = (
-                '[[["Fbv4je","[\\"garturlreq\\",[[\\"X\\",\\"X\\",[\\"X\\",\\"X\\"],'
-                'null,null,1,1,\\"US:en\\",null,1,null,null,null,null,null,0,1],'
-                '\\"X\\",\\"X\\",1,[1,1,1],1,1,null,0,0,null,0],'
-                f'\\"{gn_id.group(1)}\\",{ts.group(1)},\\"{sig.group(1)}\\"]",'
-                'null,"generic"]]]'
-            )
-            async with session.post(
-                "https://news.google.com/_/DotsSplashUi/data/batchexecute",
-                headers={"User-Agent": _GN_UA,
-                         "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
-                data={"f.req": payload},
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp2:
-                body = await resp2.text()
-            if "garturlres" in body:
-                m = re.search(r'https?://[^"\\]+', body.split("garturlres", 1)[1])
-                if m:
-                    _GN_CACHE[enc] = m.group(0)
-                    article.url = m.group(0)
-                    return
-            _GN_CACHE[enc] = ""
-        except Exception:
-            _GN_CACHE[enc] = ""
-
-
-# Concurrency cap for OG-image scraping (don't hammer article sites)
-_OG_SEMAPHORE = asyncio.Semaphore(10)
-# Browser UA — bot UAs get blocked or served stripped HTML by many sites
-_OG_HEADERS = {
-    "User-Agent": _GN_UA,
-    "Accept": "text/html",
-}
-_OG_TIMEOUT = aiohttp.ClientTimeout(total=5)
-# Regex to find og:image or twitter:image in <head> HTML
-_OG_RE = re.compile(
-    r'<meta[^>]+(?:property=["\']og:image["\']|name=["\']twitter:image["\'])[^>]+'
-    r'content=["\']([^"\']+)["\']'
-    r'|'
-    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+'
-    r'(?:property=["\']og:image["\']|name=["\']twitter:image["\'])',
-    re.IGNORECASE,
-)
 
 
 @dataclass
-class RawArticle:
-    source:    str
-    title:     str
-    url:       str
-    body:      str
-    published: datetime.datetime = field(default_factory=datetime.datetime.utcnow)
-    image_url: str = ""
+class FinBERTResult:
+    label:      str    # positive | negative | neutral
+    score:      float  # continuous polarity: P(positive) - P(negative), in [-1, 1]
+    confidence: float  # raw softmax probability of the winning class
 
 
-class RSSCollector:
-    """Async parallel collection from all configured RSS feeds."""
+class FinBERTScorer:
+    """Lazy-loaded FinBERT inference with batching."""
 
-    def __init__(self, feeds: dict[str, str] = RSS_FEEDS):
-        self._feeds = feeds
+    _pipeline = None
 
-    async def _fetch_feed(
-        self,
-        session: aiohttp.ClientSession,
-        name: str,
-        url: str,
-    ) -> List[RawArticle]:
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                text = await resp.text()
-        except Exception as exc:
-            log.warning("RSS fetch failed [%s]: %s", name, exc)
-            return []
-
-        parsed = feedparser.parse(text)
-        articles: List[RawArticle] = []
-        for entry in parsed.entries[:MAX_ARTICLES_PER_SOURCE]:
-            published = _parse_time(entry)
-            body = (
-                entry.get("summary")
-                or entry.get("description")
-                or entry.get("content", [{}])[0].get("value", "")
+    @classmethod
+    def _load(cls):
+        if cls._pipeline is None:
+            from transformers import pipeline
+            log.info("Loading FinBERT model %s …", FINBERT_MODEL)
+            cls._pipeline = pipeline(
+                "text-classification",
+                model=FINBERT_MODEL,
+                tokenizer=FINBERT_MODEL,
+                top_k=None,          # return all three class scores
+                truncation=True,
+                max_length=512,
             )
-            articles.append(RawArticle(
-                source=name,
-                title=entry.get("title", ""),
-                url=entry.get("link", ""),
-                body=body,
-                published=published,
-                image_url=_get_media_image(entry),
-            ))
-        log.debug("RSS [%s] → %d articles", name, len(articles))
-        return articles
+            log.info("FinBERT loaded.")
+        return cls._pipeline
 
-    async def collect_async(self) -> List[RawArticle]:
-        connector = aiohttp.TCPConnector(limit=30, ssl=_SSL)
-        # max_*_size raised: Yahoo Finance sends CSP headers > aiohttp's 8 KB
-        # default limit, which kills the request with LineTooLong
-        async with aiohttp.ClientSession(
-            connector=connector,
-            max_line_size=32_768,
-            max_field_size=32_768,
-        ) as session:
-            tasks = [
-                self._fetch_feed(session, name, url)
-                for name, url in self._feeds.items()
-            ]
-            results = await asyncio.gather(*tasks)
-            articles = [a for batch in results for a in batch]
+    def score_batch(self, texts: List[str]) -> List[FinBERTResult | None]:
+        """Score a batch; returns None for items that fall below confidence threshold."""
+        pipe = self._load()
+        results: List[FinBERTResult | None] = []
+        for i in range(0, len(texts), SENTIMENT_BATCH):
+            batch = texts[i : i + SENTIMENT_BATCH]
+            try:
+                outputs = pipe(batch)
+            except Exception as exc:
+                log.warning("FinBERT batch error: %s", exc)
+                results.extend([None] * len(batch))
+                continue
+            for item_scores in outputs:
+                best = max(item_scores, key=lambda x: x["score"])
+                if best["score"] < FINBERT_MIN_CONF:
+                    results.append(None)
+                    continue
+                # Continuous polarity rather than a hard +1/-1/0 label.
+                # The label-map version collapsed every neutral article to
+                # exactly 0.0, which zeroed its rank_score AND its aggregation
+                # weight — silently discarding ~80% of the corpus and letting a
+                # small confident minority set each ticker's composite.
+                probs = {s["label"].lower(): s["score"] for s in item_scores}
+                polarity = probs.get("positive", 0.0) - probs.get("negative", 0.0)
+                results.append(FinBERTResult(
+                    label=best["label"].lower(),
+                    score=polarity,
+                    confidence=best["score"],
+                ))
+        return results
 
-            # Resolve Google News redirect URLs to real article URLs first,
-            # so dedup keys on the real URL and OG scraping hits the article
-            gnews = [a for a in articles if "news.google.com/rss/articles" in a.url]
-            if gnews:
-                await asyncio.gather(*[_decode_gnews_url(session, a) for a in gnews],
-                                     return_exceptions=True)
-                decoded = sum(1 for a in gnews if "news.google.com" not in a.url)
-                if decoded:
-                    log.info("Google News decoder resolved %d/%d URLs", decoded, len(gnews))
-
-            # Enrich articles that have no image by scraping OG tags
-            no_img = [a for a in articles if not a.image_url and a.url.startswith("http")]
-            if no_img:
-                og_tasks = [_fetch_og_image(session, a) for a in no_img]
-                await asyncio.gather(*og_tasks, return_exceptions=True)
-                enriched = sum(1 for a in no_img if a.image_url)
-                if enriched:
-                    log.info("OG scraper enriched %d/%d articles with images", enriched, len(no_img))
-
-        return articles
-
-    def collect(self) -> List[RawArticle]:
-        return asyncio.run(self.collect_async())
+    def score(self, text: str) -> FinBERTResult | None:
+        return self.score_batch([text])[0]
 
 
-async def _fetch_og_image(session: aiohttp.ClientSession, article: "RawArticle") -> None:
-    """Fetch the article page and extract og:image / twitter:image into article.image_url."""
-    async with _OG_SEMAPHORE:
-        try:
-            async with session.get(
-                article.url, timeout=_OG_TIMEOUT,
-                headers=_OG_HEADERS, allow_redirects=True,
-            ) as resp:
-                if resp.status != 200:
-                    return
-                # Read first 120 KB — heavy pages (Yahoo Finance) bury
-                # og:image past 60 KB of inlined scripts
-                chunk = await resp.content.read(120_000)
-                text = chunk.decode("utf-8", errors="ignore")
-        except Exception:
-            return
+# ======================================================================
+# from sentiment/vader.py
+# ======================================================================
 
-    m = _OG_RE.search(text)
-    if m:
-        img_url = (m.group(1) or m.group(2) or "").strip()
-        if img_url.startswith("http"):
-            article.image_url = img_url
+from dataclasses import dataclass
 
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-def _get_media_image(entry) -> str:
-    """Extract the best available image URL from an RSS entry."""
-    # media:thumbnail (most common in news RSS)
-    thumbs = getattr(entry, "media_thumbnail", None)
-    if thumbs and isinstance(thumbs, list) and thumbs[0].get("url"):
-        return thumbs[0]["url"]
+# VADER ships a general-purpose social-media lexicon that misreads financial
+# language: "beat" is scored as violence (-), "surges", "downgrade" and
+# "all-time high" are absent entirely. "Earnings beat expectations, stock surges
+# to all-time high" scored exactly 0.0 (neutral) before this table was added.
+# Valences are on VADER's -4..+4 scale.
+_FINANCE_LEXICON: dict[str, float] = {
+    # bullish
+    "beat": 2.0, "beats": 2.0, "outperform": 2.4, "outperformed": 2.4,
+    "surge": 2.8, "surges": 2.8, "surged": 2.8, "soar": 3.0, "soars": 3.0,
+    "soared": 3.0, "rally": 2.2, "rallies": 2.2, "rallied": 2.2,
+    "jump": 1.8, "jumps": 1.8, "jumped": 1.8, "climb": 1.4, "climbs": 1.4,
+    "gain": 1.6, "gains": 1.6, "gained": 1.6, "upgrade": 2.4,
+    "upgraded": 2.4, "upgrades": 2.4, "bullish": 2.6, "record": 1.6,
+    "profit": 1.8, "profits": 1.8, "profitable": 2.0, "growth": 1.6,
+    "dividend": 1.2, "buyback": 1.6, "expansion": 1.4, "guidance": 0.4,
+    "raised": 1.6, "raises": 1.6, "topped": 1.8, "tops": 1.8,
+    "breakout": 2.0, "momentum": 1.2, "recovery": 1.6, "rebound": 1.8,
+    # bearish
+    "miss": -2.0, "misses": -2.0, "missed": -2.0, "plunge": -3.0,
+    "plunges": -3.0, "plunged": -3.0, "slump": -2.4, "slumps": -2.4,
+    "tumble": -2.6, "tumbles": -2.6, "tumbled": -2.6, "crash": -3.2,
+    "crashes": -3.2, "crashed": -3.2, "slide": -1.8, "slides": -1.8,
+    "sink": -2.2, "sinks": -2.2, "sank": -2.2, "drop": -1.6, "drops": -1.6,
+    "dropped": -1.6, "fell": -1.6, "falls": -1.6, "decline": -1.8,
+    "declines": -1.8, "downgrade": -2.6, "downgraded": -2.6,
+    "downgrades": -2.6, "bearish": -2.6, "loss": -2.0, "losses": -2.0,
+    "layoff": -2.4, "layoffs": -2.4, "bankruptcy": -3.4, "default": -2.8,
+    "lawsuit": -2.0, "probe": -1.8, "investigation": -1.8, "recall": -2.0,
+    "selloff": -2.4, "sell-off": -2.4, "warning": -2.0, "warns": -2.0,
+    "cuts": -1.4, "slashed": -2.2, "halted": -2.0, "delisted": -3.0,
+    "shortfall": -2.2, "writedown": -2.4, "restructuring": -1.2,
+}
 
-    # media:content with image type
-    content = getattr(entry, "media_content", None)
-    if content and isinstance(content, list):
-        for m in content:
-            url = m.get("url", "")
-            if url and (m.get("medium") == "image" or
-                        any(url.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"))):
-                return url
-
-    # enclosures (podcasts/images)
-    for enc in getattr(entry, "enclosures", []):
-        if enc.get("type", "").startswith("image/"):
-            return enc.get("href") or enc.get("url", "")
-
-    # img tag buried in summary HTML
-    summary = entry.get("summary", "") or entry.get("description", "")
-    if summary and "<img" in summary:
-        try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(summary, "html.parser")
-            img = soup.find("img")
-            if img and img.get("src", "").startswith("http"):
-                return img["src"]
-        except Exception:
-            pass
-
-    return ""
+_analyzer = SentimentIntensityAnalyzer()
+_analyzer.lexicon.update(_FINANCE_LEXICON)
 
 
-def _parse_time(entry) -> datetime.datetime:
-    if hasattr(entry, "published_parsed") and entry.published_parsed:
-        try:
-            return datetime.datetime(*entry.published_parsed[:6])
-        except Exception:
-            pass
-    return datetime.datetime.utcnow()
+@dataclass
+class VADERResult:
+    compound: float   # [-1, 1]
+    label:    str     # positive / negative / neutral
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/scraper_collector.py
-# ────────────────────────────────────────────────────────────────────────────
+def score(text: str) -> VADERResult:
+    scores  = _analyzer.polarity_scores(text)
+    compound = scores["compound"]
+    if compound >= 0.05:
+        label = "positive"
+    elif compound <= -0.05:
+        label = "negative"
+    else:
+        label = "neutral"
+    return VADERResult(compound=compound, label=label)
 
-from __future__ import annotations
-import asyncio
-import datetime
+
+# ======================================================================
+# from sentiment/ticker_extractor.py
+# ======================================================================
+
+"""
+Ticker extractor: finds stock ticker symbols mentioned in article text.
+
+Three pass strategy (ordered by precision):
+  1. $TICKER  — explicit dollar-prefix (highest precision)
+  2. ALL-CAPS words filtered against TICKER_UNIVERSE (medium precision)
+  3. Company name substring match from COMPANY_TO_TICKER (catches "Apple", "Tesla" etc.)
+"""
+import re
 import logging
-from typing import List
+from typing import Sequence
 
-import aiohttp
-import feedparser
-from bs4 import BeautifulSoup
-
-from config.settings import SCRAPER_TARGETS, SCRAPER_TIMEOUT, SCRAPER_USER_AGENT
-from .rss_collector import RawArticle, _SSL
+from config.tickers import (
+    TICKER_UNIVERSE, COMPANY_TO_TICKER, AMBIGUOUS_NAMES, _STOPWORDS
+)
 
 log = logging.getLogger(__name__)
 
-HEADERS = {"User-Agent": SCRAPER_USER_AGENT}
+# Pre-compiled patterns
+_DOLLAR_PAT  = re.compile(r'\$([A-Z]{1,5}(?:\.[A-B])?)')  # $AAPL, $BRK.B
+_ALLCAPS_PAT = re.compile(r'\b([A-Z]{2,5})\b')            # standalone ALL-CAPS
 
 
-def _get_og_image(soup) -> str:
-    """Extract Open Graph or Twitter card image from a BeautifulSoup page."""
-    for attr, key in [("property", "og:image"), ("name", "twitter:image"),
-                      ("property", "og:image:url"), ("itemprop", "image")]:
-        tag = soup.find("meta", {attr: key})
-        if tag and tag.get("content", "").startswith("http"):
-            return tag["content"]
-    return ""
+def _name_pattern(name: str) -> re.Pattern:
+    """
+    Word-boundary matcher for a company name.
+
+    Plain `name in text` matches inside unrelated words — "meta" inside
+    "Rheinmetall", "ups" inside "groups", "intel" inside "intelligence",
+    "unity" inside "opportunity". Anchoring with \\b removes those.
+    \\b is only useful next to a word character, so it is added conditionally
+    (a name like "at&t" ends in one, "s&p 500" does not start with a symbol).
+    """
+    left  = r'\b' if name[:1].isalnum() else ''
+    right = r'\b' if name[-1:].isalnum() else ''
+    return re.compile(left + re.escape(name) + right)
 
 
-class ScraperCollector:
-    """HTML scraper for TradingView, FinViz, SEC EDGAR, and FDA."""
+# (name, lowercase pattern, ticker, needs_capital), built once at import
+_COMPANY_PATTERNS: list[tuple[str, re.Pattern, str, bool]] = [
+    (name, _name_pattern(name), ticker, name in AMBIGUOUS_NAMES)
+    for name, ticker in COMPANY_TO_TICKER.items()
+]
 
-    async def _scrape_generic(
-        self,
-        session: aiohttp.ClientSession,
-        name: str,
-        cfg: dict,
-    ) -> List[RawArticle]:
-        # FDA exposes RSS — delegate to feedparser
-        if "rss" in cfg:
-            try:
-                async with session.get(
-                    cfg["rss"],
-                    headers=HEADERS,
-                    timeout=aiohttp.ClientTimeout(total=SCRAPER_TIMEOUT),
-                ) as resp:
-                    text = await resp.text()
-                parsed = feedparser.parse(text)
-                return [
-                    RawArticle(
-                        source=name,
-                        title=e.get("title", ""),
-                        url=e.get("link", ""),
-                        body=e.get("summary", ""),
-                        published=datetime.datetime.utcnow(),
-                    )
-                    for e in parsed.entries[:50]
-                ]
-            except Exception as exc:
-                log.warning("Scraper RSS [%s]: %s", name, exc)
-                return []
 
-        url = cfg["url"].format(date=datetime.date.today().isoformat())
-        try:
-            async with session.get(
-                url,
-                headers=HEADERS,
-                timeout=aiohttp.ClientTimeout(total=SCRAPER_TIMEOUT),
-            ) as resp:
-                html = await resp.text()
-        except Exception as exc:
-            log.warning("Scraper fetch [%s]: %s", name, exc)
-            return []
-
-        soup = BeautifulSoup(html, "lxml")
-        page_og_image = _get_og_image(soup)   # fallback: page-level OG image
-        articles: List[RawArticle] = []
-        for row in soup.select(cfg["article_sel"])[:50]:
-            title_tag = row.select_one(cfg["title_sel"])
-            if not title_tag:
+def _company_matches(text: str, text_lower: str):
+    """Yield tickers whose company name appears as a whole word in *text*."""
+    for name, pat, ticker, needs_capital in _COMPANY_PATTERNS:
+        # cheap substring prefilter first, then the authoritative boundary check
+        if name not in text_lower:
+            continue
+        match = pat.search(text_lower)
+        if not match:
+            continue
+        # Ambiguous aliases must be capitalised in the original headline to
+        # count — "Snap beat estimates" yes, "a snap decision" no. Compare the
+        # matched span back against the original-case text.
+        if needs_capital:
+            spans = [m.start() for m in pat.finditer(text_lower)]
+            if not any(text[i:i + 1].isupper() for i in spans):
                 continue
-            title = title_tag.get_text(strip=True)
-            href  = title_tag.get("href", "")
-            if href and not href.startswith("http"):
-                from urllib.parse import urlparse, urljoin
-                href = urljoin(url, href)
-            # row-level image first, then page og, then empty
-            row_img = ""
-            img_tag = row.find("img")
-            if img_tag:
-                row_img = img_tag.get("src", "") or img_tag.get("data-src", "")
-                if row_img and not row_img.startswith("http"):
-                    row_img = ""
-            articles.append(RawArticle(
-                source=name,
-                title=title,
-                url=href,
-                body="",
-                published=datetime.datetime.utcnow(),
-                image_url=row_img or page_og_image,
-            ))
-        log.debug("Scraper [%s] → %d articles", name, len(articles))
-        return articles
-
-    async def collect_async(self) -> List[RawArticle]:
-        connector = aiohttp.TCPConnector(limit=10, ssl=_SSL)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            tasks = [
-                self._scrape_generic(session, name, cfg)
-                for name, cfg in SCRAPER_TARGETS.items()
-            ]
-            results = await asyncio.gather(*tasks)
-        return [a for batch in results for a in batch]
-
-    def collect(self) -> List[RawArticle]:
-        return asyncio.run(self.collect_async())
+        yield ticker
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/collectors/stocktwits_collector.py
-# ────────────────────────────────────────────────────────────────────────────
+def extract_tickers(text: str, *, max_tickers: int = 10) -> list[str]:
+    """
+    Return a sorted list of unique ticker symbols found in *text*.
+    Limited to *max_tickers* to avoid noise from very long articles.
+    """
+    if not text:
+        return []
+
+    # Track which pass found each symbol so truncation can keep the most
+    # reliable ones: $-prefix (1) > company name (2) > bare ALL-CAPS (3).
+    precision: dict[str, int] = {}
+
+    def _add(sym: str, rank: int) -> None:
+        if rank < precision.get(sym, 99):
+            precision[sym] = rank
+
+    # ── Pass 1: $TICKER ────────────────────────────────────────────────────────
+    # No stopword filter here: an explicit cashtag is unambiguous intent, and
+    # several real symbols are also common words ($ON, $OPEN, $NOW, $ALL).
+    for m in _DOLLAR_PAT.finditer(text):
+        sym = m.group(1)
+        if sym in TICKER_UNIVERSE:
+            _add(sym, 1)
+
+    # ── Pass 2: Company names (whole word only) ───────────────────────────────
+    text_lower = text.lower()
+    for ticker in _company_matches(text, text_lower):
+        _add(ticker, 2)
+
+    # ── Pass 3: ALL-CAPS words ─────────────────────────────────────────────────
+    for m in _ALLCAPS_PAT.finditer(text):
+        sym = m.group(1)
+        if sym in TICKER_UNIVERSE and sym not in _STOPWORDS:
+            _add(sym, 3)
+
+    if len(precision) > max_tickers:
+        # Drop the least reliable matches first, then break ties alphabetically
+        keep = sorted(precision, key=lambda s: (precision[s], s))[:max_tickers]
+        return sorted(keep)
+
+    return sorted(precision)
+
+
+def extract_primary_ticker(text: str) -> str | None:
+    """
+    Return the single most prominent ticker, or None.
+    Priority: $-prefix > company name > all-caps.
+    """
+    if not text:
+        return None
+
+    # $-prefix first (explicit cashtag — no stopword filter, see extract_tickers)
+    for m in _DOLLAR_PAT.finditer(text):
+        sym = m.group(1)
+        if sym in TICKER_UNIVERSE:
+            return sym
+
+    # Company name (whole word only)
+    text_lower = text.lower()
+    for ticker in _company_matches(text, text_lower):
+        return ticker
+
+    # All-caps fallback
+    for m in _ALLCAPS_PAT.finditer(text):
+        sym = m.group(1)
+        if sym in TICKER_UNIVERSE and sym not in _STOPWORDS:
+            return sym
+
+    return None
+
+
+def tickers_to_str(tickers: Sequence[str]) -> str:
+    """Serialize ticker list to comma-separated string for DB storage."""
+    return ",".join(tickers) if tickers else ""
+
+
+def str_to_tickers(s: str | None) -> list[str]:
+    """Deserialize comma-separated ticker string from DB."""
+    if not s:
+        return []
+    return [t.strip() for t in s.split(",") if t.strip()]
+
+
+# ======================================================================
+# from sentiment/llm_judge.py
+# ======================================================================
 
 """
-StockTwits trending-stream collector.
+LLM sentiment judge — free-tier Groq nuance layer over financial headlines.
 
-Free public API, no key required — the zero-cost alternative to the Twitter/X
-API for "tweets' sentiment". Each trending message becomes a RawArticle whose
-body is the message text; cashtags ($AAPL) flow straight into the existing
-3-pass ticker extractor.
+Why this exists
+---------------
+FinBERT is a strong *free* financial-sentiment model (~89% accuracy) but it
+classifies single sentences and misses context that flips a headline's meaning:
+"Acme cuts costs" (bullish) vs "Acme cuts guidance" (bearish), "beats but warns",
+"misses on revenue, raises buyback", etc. A general LLM reads that nuance.
 
-Rate limit: 200 req/hr unauthenticated. We make exactly 1 request per pipeline
-cycle (max 60/hr), so we stay well under it.
+This module asks Groq's free tier (llama-3.3-70b-versatile — no credit card,
+14,400 req/day, fast enough for the real-time board) to score a BATCH of
+headlines in one call. It returns a continuous score in [-1, 1] per headline,
+in the SAME convention as FinBERT's `score` (P(pos) - P(neg)), so callers can
+use it as a drop-in replacement.
+
+It NEVER raises and NEVER blocks the pipeline: with no key, a missing `groq`
+package, a rate-limit, or any error, it returns `None` for the affected
+headlines and the caller falls back to FinBERT/VADER (fully offline).
 """
-from __future__ import annotations
-import datetime
 import json
 import logging
-import subprocess
-from typing import List
 
-from config.settings import STOCKTWITS_TRENDING_URL, STOCKTWITS_ENABLED
-from src.collectors.rss_collector import RawArticle
+from config.settings import GROQ_API_KEY, NEWS_LLM_MODEL, USE_LLM_SENTIMENT
 
 log = logging.getLogger(__name__)
 
-# Cloudflare blocks Python's TLS fingerprint (requests/aiohttp get 403)
-# but curl's fingerprint passes — so we shell out to curl.
-_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+# Batch size: one Groq call scores this many headlines. ~20 short headlines is
+# well under the free-tier per-minute token budget and keeps latency low.
+_BATCH = 20
+
+_SYSTEM = (
+    "You are a financial-news sentiment analyst. For each numbered headline, "
+    "judge its impact on the mentioned company's stock for a LONG-TERM investor. "
+    "Read context carefully: 'cuts costs' is bullish, 'cuts guidance' is bearish; "
+    "'beats but warns' is roughly neutral. Output ONLY a JSON array, one object "
+    "per headline, in the same order, each: "
+    '{"i": <number>, "score": <float -1..1>, "label": "positive"|"negative"|"neutral"}. '
+    "score = +1 very bullish, 0 neutral, -1 very bearish. No prose, no code fences."
+)
 
 
-class StockTwitsCollector:
-    """Fetch trending messages from StockTwits' free public API."""
+def _client():
+    """Return a Groq client, or None when unavailable (no key / package)."""
+    if not USE_LLM_SENTIMENT:
+        return None
+    try:
+        from groq import Groq
+    except ImportError:
+        return None
+    if not GROQ_API_KEY or GROQ_API_KEY.startswith("PASTE_"):
+        return None
+    return Groq(api_key=GROQ_API_KEY)
 
-    def collect(self) -> List[RawArticle]:
-        if not STOCKTWITS_ENABLED:
-            return []
-        try:
-            out = subprocess.run(
-                ["curl", "-s", "--max-time", "10", "-H", f"User-Agent: {_UA}",
-                 STOCKTWITS_TRENDING_URL],
-                capture_output=True, text=True, timeout=15,
-            )
-            messages = json.loads(out.stdout).get("messages", [])
-        except Exception as exc:
-            log.warning("StockTwits fetch failed: %s", exc)
-            return []
 
-        articles: List[RawArticle] = []
-        for m in messages:
-            body = m.get("body", "")
-            if not body:
+def is_available() -> bool:
+    return _client() is not None
+
+
+# Strip the "groq/" prefix the CrewAI config uses — the raw SDK wants the bare id.
+_MODEL = NEWS_LLM_MODEL.split("/", 1)[-1]
+
+
+def _label_of(score: float) -> str:
+    return "positive" if score > 0.05 else "negative" if score < -0.05 else "neutral"
+
+
+def _score_batch(client, headlines: list[str]) -> list[dict | None]:
+    """Score one batch. Returns per-headline dict or None on any failure."""
+    numbered = "\n".join(f"{i}. {h}" for i, h in enumerate(headlines))
+    try:
+        resp = client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": numbered},
+            ],
+            temperature=0.0,
+            max_tokens=1500,
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content.strip()
+        data = json.loads(raw)
+        # The model may wrap the array in a key (json_object mode); unwrap it.
+        if isinstance(data, dict):
+            arr = next((v for v in data.values() if isinstance(v, list)), None)
+        else:
+            arr = data
+        if not isinstance(arr, list):
+            return [None] * len(headlines)
+
+        out: list[dict | None] = [None] * len(headlines)
+        for obj in arr:
+            if not isinstance(obj, dict):
                 continue
-            symbols = [s.get("symbol", "") for s in m.get("symbols", [])]
-            # Prefix cashtags so the $TICKER extraction pass catches them
-            cashtags = " ".join(f"${s}" for s in symbols if s)
-            user = (m.get("user") or {}).get("username", "user")
-
-            created = m.get("created_at", "")
+            idx = obj.get("i")
+            if not isinstance(idx, int) or not (0 <= idx < len(headlines)):
+                continue
             try:
-                published = datetime.datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ")
-            except (ValueError, TypeError):
-                published = datetime.datetime.utcnow()
-
-            articles.append(RawArticle(
-                source="stocktwits",
-                title=f"@{user}: {body[:120]}",
-                url=f"https://stocktwits.com/{user}/message/{m.get('id','')}",
-                body=f"{cashtags} {body}".strip(),
-                published=published,
-                image_url=(m.get("entities") or {}).get("chart", {}).get("url", "") or "",
-            ))
-
-        log.info("StockTwits → %d trending messages", len(articles))
-        return articles
+                score = max(-1.0, min(1.0, float(obj.get("score"))))
+            except (TypeError, ValueError):
+                continue
+            label = obj.get("label")
+            if label not in ("positive", "negative", "neutral"):
+                label = _label_of(score)
+            out[idx] = {"score": round(score, 4), "label": label}
+        return out
+    except Exception as exc:  # noqa: BLE001 — never break the pipeline
+        log.warning("LLM judge batch failed (%s); falling back to FinBERT", exc)
+        return [None] * len(headlines)
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/utils/__init__.py
-# ────────────────────────────────────────────────────────────────────────────
+def score_headlines(headlines: list[str]) -> list[dict | None]:
+    """
+    Score each headline in [-1, 1] (FinBERT `score` convention).
+
+    Returns a list the same length as `headlines`; each element is
+    {"score": float, "label": str} or None (caller should fall back).
+    Fully graceful: returns all-None when Groq is unavailable.
+    """
+    if not headlines:
+        return []
+    client = _client()
+    if client is None:
+        return [None] * len(headlines)
+
+    results: list[dict | None] = []
+    for start in range(0, len(headlines), _BATCH):
+        batch = headlines[start:start + _BATCH]
+        results.extend(_score_batch(client, batch))
+    return results
 
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/utils/market_hours.py
-# ────────────────────────────────────────────────────────────────────────────
+# ======================================================================
+# from sentiment/scorer.py
+# ======================================================================
 
 """
-Market-hours helper for US equities (NYSE/NASDAQ).
-All times in US/Eastern.
+SentimentScorer: FinBERT primary, VADER fallback.
+
+Rank formula (v3):
+    rank_score = |sentiment_score| × message_density × trust_weight
+
+Time decay is NOT stored in rank_score — it is applied at read time by the
+dashboard and the aggregator, so a score keeps decaying as the article ages
+instead of being frozen at the moment it was scored. `time_weight` is still
+recorded on the row for reference/analysis.
+
+sentiment_score = FinBERT P(positive) - P(negative), continuous in [-1, 1]
+                  (VADER compound when FinBERT is below FINBERT_MIN_CONF)
+
+message_density = this source's share of the window, normalised to (0, 1] so
+                  rank_score stays bounded and comparable across cycles
+
+trust_weight = 1.0  for Tier-1 sources (Reuters, Dow Jones, SEC, FDA)
+             = 0.75 for everything else
+
+time_weight  = exp( -ln(2) / HALFLIFE_HOURS × hours_old )
+               → article published NOW gets 1.0
+               → 24-h-old article gets 0.5 (with default 24-h half-life)
+               (recorded on the row; applied live by readers, not baked into
+                rank_score — see above)
 """
-from __future__ import annotations
 import datetime
-from zoneinfo import ZoneInfo
+import logging
+import math
+from collections import Counter
+from typing import List
 
-ET = ZoneInfo("America/New_York")
+from config.settings import (
+    SOURCE_TRUST, DEFAULT_TRUST_WEIGHT, TIME_DECAY_HALFLIFE_HOURS
+)
+from src.collectors import RawArticle
+from src.storage import SentimentResult
+vader_score = score
 
-# Market open / close in ET
-_OPEN  = datetime.time(9, 30)
-_CLOSE = datetime.time(16, 0)
-_PRE   = datetime.time(4, 0)
-_POST  = datetime.time(20, 0)
+log = logging.getLogger(__name__)
+
+_LN2 = math.log(2)
 
 
-def now_et() -> datetime.datetime:
-    return datetime.datetime.now(tz=ET)
+def _trust_weight(source: str) -> float:
+    return SOURCE_TRUST.get(source, DEFAULT_TRUST_WEIGHT)
 
 
-def market_status() -> dict:
+def _time_weight(published: datetime.datetime | None) -> float:
+    """Exponential decay based on article age."""
+    if published is None:
+        return 1.0
+    now = datetime.datetime.utcnow()
+    # Ensure naive comparison
+    if published.tzinfo is not None:
+        published = published.replace(tzinfo=None)
+    hours_old = max(0.0, (now - published).total_seconds() / 3600)
+    return math.exp(-_LN2 / TIME_DECAY_HALFLIFE_HOURS * hours_old)
+
+
+class SentimentScorer:
     """
-    Returns a dict with keys:
-      status  : "OPEN" | "PRE-MARKET" | "AFTER-HOURS" | "CLOSED"
-      label   : short display label
-      color   : hex color hint for the UI
-      is_open : bool — True only during regular trading hours
+    FinBERT primary; VADER fallback when FinBERT confidence < FINBERT_MIN_CONF.
+    rank_score = |sentiment_score| × density × trust_weight × time_weight
     """
-    now = now_et()
-    weekday = now.weekday()  # 0=Mon … 6=Sun
-    t = now.time()
 
-    if weekday >= 5:  # Sat or Sun
-        return {"status": "CLOSED", "label": "Market Closed", "color": "#5a7a96", "is_open": False}
+    def __init__(self):
+        self._finbert = FinBERTScorer()
 
-    if _OPEN <= t < _CLOSE:
-        return {"status": "OPEN", "label": "Market Open", "color": "#00d47e", "is_open": True}
+    def score_articles(
+        self,
+        articles: List[RawArticle],
+        window_articles: List[RawArticle] | None = None,
+    ) -> List[SentimentResult]:
+        if not articles:
+            return []
 
-    if _PRE <= t < _OPEN:
-        return {"status": "PRE-MARKET", "label": "Pre-Market", "color": "#f5a623", "is_open": False}
+        # Message density = share of the window contributed by this article's
+        # source, normalised to (0, 1]. The raw count was unusable as a rank
+        # factor: a source with 50k rows (StockTwits) gave every one of its
+        # posts a 10-50x multiplier over a CNBC story, so rank_score measured
+        # how chatty a source is rather than how important the news is. It was
+        # also unbounded, making scores incomparable across cycles.
+        all_articles = window_articles or articles
+        source_counts = Counter(a.source for a in all_articles)
+        max_count = max(source_counts.values()) if source_counts else 1
 
-    # Everything else on a weekday (after close OR overnight) = after-hours
-    # This is the prime window for overnight sentiment analysis
-    return {"status": "AFTER-HOURS", "label": "After-Hours", "color": "#9b59b6", "is_open": False}
+        texts = [f"{a.title}. {a.body}"[:512] for a in articles]
+        finbert_results = self._finbert.score_batch(texts)
 
+        # Free-tier Groq LLM judge over the headlines — reads nuance FinBERT
+        # misses ("cuts costs" bullish vs "cuts guidance" bearish). Returns
+        # None per item when Groq is unavailable, so FinBERT/VADER still drive
+        # the fully-offline path. Attribution is title-based, so judge titles.
+        llm_results = score_headlines([a.title for a in articles])
 
-def pipeline_interval_seconds() -> int:
-    """
-    Recommended pipeline interval based on current market status:
-      After-hours / Pre-market  → 60s  (overnight news is high-value)
-      Market open               → 90s  (still active, slightly relaxed)
-      Weekend / overnight       → 600s (market fully closed, no rush)
-    """
-    ms = market_status()
-    if ms["status"] in ("AFTER-HOURS", "PRE-MARKET"):
-        return 60
-    if ms["status"] == "OPEN":
-        return 90
-    return 600  # CLOSED (weekend / overnight)
+        results: List[SentimentResult] = []
+        for article, fb, llm, text in zip(articles, finbert_results, llm_results, texts):
+            density = source_counts[article.source] / max_count
+            tw      = _trust_weight(article.source)
+            dw      = _time_weight(article.published)
+
+            # VADER is computed once for every article: it is stored as an
+            # independent second opinion, and reused as the fallback below.
+            vader_compound = vader_score(text).compound
+
+            # FinBERT fields are always recorded for reference/display when the
+            # model was confident, regardless of which engine drives the score.
+            if fb is not None:
+                finbert_label = fb.label
+                finbert_score = fb.score
+                finbert_conf  = fb.confidence
+            else:
+                finbert_label = finbert_score = finbert_conf = None
+
+            # Sentiment priority: LLM judge (nuance) → FinBERT → VADER. Sign is
+            # preserved; all three use the same [-1, 1] convention.
+            if llm is not None:
+                sentiment_score = llm["score"]
+                if finbert_label is None:
+                    finbert_label = llm["label"]   # give the UI a label to show
+            elif fb is not None:
+                # fb.score is already continuous polarity in [-1, 1]; it carries
+                # the model's confidence in its magnitude, so multiplying by
+                # fb.confidence again would double-count it.
+                sentiment_score = fb.score
+            else:
+                # VADER fallback (FinBERT below FINBERT_MIN_CONF or errored)
+                sentiment_score = vader_compound
+                log.debug("VADER fallback for: %s", article.title[:60])
+
+            # rank_score is the *undecayed* base. Time decay is applied when the
+            # score is read (dashboard `_ranked_rows`, aggregator
+            # `_live_time_weight`) so it keeps decaying as the article ages.
+            # Baking dw in here meant the readers multiplied by decay a second
+            # time — an article scored 12h after publication was decayed twice.
+            rank_score = abs(sentiment_score) * density * tw
+
+            # Extract tickers from title (fast, no body needed)
+            tickers = extract_tickers(article.title)
+            tickers_str = tickers_to_str(tickers)
+
+            results.append(SentimentResult(
+                article_id      = 0,
+                source          = article.source,
+                title           = article.title,
+                url             = article.url,
+                published       = article.published,
+                finbert_label   = finbert_label,
+                finbert_score   = finbert_score,
+                finbert_conf    = finbert_conf,
+                vader_compound  = vader_compound,
+                sentiment_score = sentiment_score,
+                message_density = density,
+                trust_weight    = tw,
+                time_weight     = dw,
+                rank_score      = rank_score,
+                tickers         = tickers_str,
+                image_url       = getattr(article, "image_url", "") or "",
+                scored_at       = datetime.datetime.utcnow(),
+            ))
+        return results
+
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# FILE: src/storage/__init__.py
+# FILE: src/storage.py
 # ────────────────────────────────────────────────────────────────────────────
 
-from .models import Article, SentimentResult, init_db
-
-__all__ = ["Article", "SentimentResult", "init_db"]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/storage/models.py
-# ────────────────────────────────────────────────────────────────────────────
-
+"""storage — merged from 1 modules for a simpler layout."""
 from __future__ import annotations
+
+# ======================================================================
+# from storage/models.py
+# ======================================================================
+
 import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Text, create_engine
@@ -3561,6 +4066,80 @@ def init_db() -> Session:
     return Session(engine)
 
 
+
+# ────────────────────────────────────────────────────────────────────────────
+# FILE: src/utils.py
+# ────────────────────────────────────────────────────────────────────────────
+
+"""utils — merged from 1 modules for a simpler layout."""
+from __future__ import annotations
+
+# ======================================================================
+# from utils/market_hours.py
+# ======================================================================
+
+"""
+Market-hours helper for US equities (NYSE/NASDAQ).
+All times in US/Eastern.
+"""
+import datetime
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+
+# Market open / close in ET
+_OPEN  = datetime.time(9, 30)
+_CLOSE = datetime.time(16, 0)
+_PRE   = datetime.time(4, 0)
+_POST  = datetime.time(20, 0)
+
+
+def now_et() -> datetime.datetime:
+    return datetime.datetime.now(tz=ET)
+
+
+def market_status() -> dict:
+    """
+    Returns a dict with keys:
+      status  : "OPEN" | "PRE-MARKET" | "AFTER-HOURS" | "CLOSED"
+      label   : short display label
+      color   : hex color hint for the UI
+      is_open : bool — True only during regular trading hours
+    """
+    now = now_et()
+    weekday = now.weekday()  # 0=Mon … 6=Sun
+    t = now.time()
+
+    if weekday >= 5:  # Sat or Sun
+        return {"status": "CLOSED", "label": "Market Closed", "color": "#5a7a96", "is_open": False}
+
+    if _OPEN <= t < _CLOSE:
+        return {"status": "OPEN", "label": "Market Open", "color": "#00d47e", "is_open": True}
+
+    if _PRE <= t < _OPEN:
+        return {"status": "PRE-MARKET", "label": "Pre-Market", "color": "#f5a623", "is_open": False}
+
+    # Everything else on a weekday (after close OR overnight) = after-hours
+    # This is the prime window for overnight sentiment analysis
+    return {"status": "AFTER-HOURS", "label": "After-Hours", "color": "#9b59b6", "is_open": False}
+
+
+def pipeline_interval_seconds() -> int:
+    """
+    Recommended pipeline interval based on current market status:
+      After-hours / Pre-market  → 60s  (overnight news is high-value)
+      Market open               → 90s  (still active, slightly relaxed)
+      Weekend / overnight       → 600s (market fully closed, no rush)
+    """
+    ms = market_status()
+    if ms["status"] in ("AFTER-HOURS", "PRE-MARKET"):
+        return 60
+    if ms["status"] == "OPEN":
+        return 90
+    return 600  # CLOSED (weekend / overnight)
+
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # FILE: src/dashboard/__init__.py
 # ────────────────────────────────────────────────────────────────────────────
@@ -3588,9 +4167,8 @@ from config.settings import (
     SIGNAL_BUY_THRESHOLD, SIGNAL_SELL_THRESHOLD,
 )
 from config.sectors import sector_of as _sector_of
-from src.storage.models import SentimentResult, TickerSentiment, Base
-from src.utils.market_hours import market_status
-from src.dashboard import chatbot
+from src.storage import SentimentResult, TickerSentiment, Base
+from src.utils import market_status
 
 log = logging.getLogger(__name__)
 
@@ -3825,7 +4403,7 @@ def _fundamental_rows(db: Session) -> list[dict]:
     Long-term fundamentals screener: tickers ranked by their 7-day SEC-filing
     signal, each with the recent filings (form, verdict, Groq summary, link).
     """
-    from src.storage.models import Filing
+    from src.storage import Filing
     rows = (db.query(TickerSentiment)
             .filter(TickerSentiment.filing_count_7d > 0)
             .all())
@@ -3922,7 +4500,7 @@ def _signal_accuracy(db: Session) -> dict:
     exclude them). Returns {"weekly": {...}, "monthly": {...}} plus a top-level
     "pct"/"n" mirroring weekly for backward compatibility.
     """
-    from src.storage.models import SignalHistory
+    from src.storage import SignalHistory
     import datetime as _dt
     now = _dt.datetime.utcnow()
 
@@ -3956,7 +4534,7 @@ def api_fundamentals():
 @app.route("/api/ticker-events/<ticker>")
 def api_ticker_events(ticker):
     """Chronological timeline: SEC filings + this week's news for one ticker."""
-    from src.storage.models import Filing
+    from src.storage import Filing
     sym = ticker.upper().lstrip("$")
     db = _make_session()
     try:
@@ -4049,7 +4627,7 @@ def api_market_status():
 @app.route("/api/price/<ticker>")
 def api_price(ticker):
     """All-time price history + reliability stats (free, via yfinance)."""
-    from src.collectors.price_history import get_price_stats
+    from src.collectors import get_price_stats
     stats = get_price_stats(ticker)
     if not stats:
         return jsonify({"error": "no price history", "ticker": ticker.upper()}), 404
@@ -4059,7 +4637,7 @@ def api_price(ticker):
 @app.route("/api/candles/<ticker>")
 def api_candles(ticker):
     """Recent daily OHLC candles for the candlestick chart (free, via yfinance)."""
-    from src.collectors.price_history import get_candles
+    from src.collectors import get_candles
     candles = get_candles(ticker)
     if not candles:
         return jsonify({"error": "no candles", "ticker": ticker.upper()}), 404
@@ -4069,7 +4647,7 @@ def api_candles(ticker):
 @app.route("/api/verify/<ticker>")
 def api_verify(ticker):
     """Independently cross-check our signal against Finviz (analysts + performance)."""
-    from src.collectors.finviz_verify import verify
+    from src.collectors import verify
     our = request.args.get("signal", "")
     data = verify(ticker, our)
     if not data:
@@ -4115,7 +4693,7 @@ def _stock_context(db: Session, ticker: str) -> str:
     chatbot can answer specific questions ("why is JPM a buy?", "is NVDA
     risky?") from the same numbers the user sees on screen.
     """
-    from src.storage.models import Filing
+    from src.storage import Filing
     sym = ticker.upper().lstrip("$")
     ts = db.query(TickerSentiment).filter(TickerSentiment.ticker == sym).first()
     if ts is None:
@@ -4191,7 +4769,7 @@ def _stock_context(db: Session, ticker: str) -> str:
 
 def _tickers_in_question(text: str, db: Session) -> list[str]:
     """Which tracked stocks is the user asking about?"""
-    from src.sentiment.ticker_extractor import extract_tickers
+    from src.sentiment import extract_tickers
     found = extract_tickers(text or "", max_tickers=3)
     tracked = {t[0] for t in db.query(TickerSentiment.ticker).all()}
     return [t for t in found if t in tracked]
@@ -4245,7 +4823,7 @@ def api_chat():
     finally:
         db.close()
 
-    reply = chatbot.chat(clean, context=context, mode=mode)
+    reply = chat(clean, context=context, mode=mode)
     return jsonify({"reply": reply})
 
 
@@ -4295,10 +4873,9 @@ if __name__ == "__main__":
     port = int(os.getenv("DASHBOARD_PORT", 5001))
     app.run(debug=False, port=port, threaded=True)
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/dashboard/chatbot.py
-# ────────────────────────────────────────────────────────────────────────────
+# ======================================================================
+# from dashboard/chatbot.py (merged in)
+# ======================================================================
 
 """
 Beginner-friendly chatbot for the SentimentIQ dashboard.
@@ -4311,7 +4888,6 @@ tickers, top headlines) so it can answer questions like "why is NVDA bullish
 today?" using the actual data on screen, and it can explain every concept in
 the app for people who are new to investing.
 """
-from __future__ import annotations
 import logging
 
 from config.settings import GROQ_API_KEY, CHAT_LLM_MODEL
@@ -4446,618 +5022,6 @@ def chat(messages: list[dict], context: str = "", mode: str = "tutor") -> str:
         log.warning("Chatbot error: %s", exc)
         return ("Sorry — I couldn't reach the AI service just now. "
                 "Please try again in a moment.")
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/sentiment/__init__.py
-# ────────────────────────────────────────────────────────────────────────────
-
-from .scorer import SentimentScorer
-
-__all__ = ["SentimentScorer"]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/sentiment/finbert.py
-# ────────────────────────────────────────────────────────────────────────────
-
-from __future__ import annotations
-import logging
-from dataclasses import dataclass
-from typing import List
-
-from config.settings import FINBERT_MODEL, SENTIMENT_BATCH, FINBERT_MIN_CONF
-
-log = logging.getLogger(__name__)
-
-
-@dataclass
-class FinBERTResult:
-    label:      str    # positive | negative | neutral
-    score:      float  # continuous polarity: P(positive) - P(negative), in [-1, 1]
-    confidence: float  # raw softmax probability of the winning class
-
-
-class FinBERTScorer:
-    """Lazy-loaded FinBERT inference with batching."""
-
-    _pipeline = None
-
-    @classmethod
-    def _load(cls):
-        if cls._pipeline is None:
-            from transformers import pipeline
-            log.info("Loading FinBERT model %s …", FINBERT_MODEL)
-            cls._pipeline = pipeline(
-                "text-classification",
-                model=FINBERT_MODEL,
-                tokenizer=FINBERT_MODEL,
-                top_k=None,          # return all three class scores
-                truncation=True,
-                max_length=512,
-            )
-            log.info("FinBERT loaded.")
-        return cls._pipeline
-
-    def score_batch(self, texts: List[str]) -> List[FinBERTResult | None]:
-        """Score a batch; returns None for items that fall below confidence threshold."""
-        pipe = self._load()
-        results: List[FinBERTResult | None] = []
-        for i in range(0, len(texts), SENTIMENT_BATCH):
-            batch = texts[i : i + SENTIMENT_BATCH]
-            try:
-                outputs = pipe(batch)
-            except Exception as exc:
-                log.warning("FinBERT batch error: %s", exc)
-                results.extend([None] * len(batch))
-                continue
-            for item_scores in outputs:
-                best = max(item_scores, key=lambda x: x["score"])
-                if best["score"] < FINBERT_MIN_CONF:
-                    results.append(None)
-                    continue
-                # Continuous polarity rather than a hard +1/-1/0 label.
-                # The label-map version collapsed every neutral article to
-                # exactly 0.0, which zeroed its rank_score AND its aggregation
-                # weight — silently discarding ~80% of the corpus and letting a
-                # small confident minority set each ticker's composite.
-                probs = {s["label"].lower(): s["score"] for s in item_scores}
-                polarity = probs.get("positive", 0.0) - probs.get("negative", 0.0)
-                results.append(FinBERTResult(
-                    label=best["label"].lower(),
-                    score=polarity,
-                    confidence=best["score"],
-                ))
-        return results
-
-    def score(self, text: str) -> FinBERTResult | None:
-        return self.score_batch([text])[0]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/sentiment/llm_judge.py
-# ────────────────────────────────────────────────────────────────────────────
-
-"""
-LLM sentiment judge — free-tier Groq nuance layer over financial headlines.
-
-Why this exists
----------------
-FinBERT is a strong *free* financial-sentiment model (~89% accuracy) but it
-classifies single sentences and misses context that flips a headline's meaning:
-"Acme cuts costs" (bullish) vs "Acme cuts guidance" (bearish), "beats but warns",
-"misses on revenue, raises buyback", etc. A general LLM reads that nuance.
-
-This module asks Groq's free tier (llama-3.3-70b-versatile — no credit card,
-14,400 req/day, fast enough for the real-time board) to score a BATCH of
-headlines in one call. It returns a continuous score in [-1, 1] per headline,
-in the SAME convention as FinBERT's `score` (P(pos) - P(neg)), so callers can
-use it as a drop-in replacement.
-
-It NEVER raises and NEVER blocks the pipeline: with no key, a missing `groq`
-package, a rate-limit, or any error, it returns `None` for the affected
-headlines and the caller falls back to FinBERT/VADER (fully offline).
-"""
-from __future__ import annotations
-import json
-import logging
-
-from config.settings import GROQ_API_KEY, NEWS_LLM_MODEL, USE_LLM_SENTIMENT
-
-log = logging.getLogger(__name__)
-
-# Batch size: one Groq call scores this many headlines. ~20 short headlines is
-# well under the free-tier per-minute token budget and keeps latency low.
-_BATCH = 20
-
-_SYSTEM = (
-    "You are a financial-news sentiment analyst. For each numbered headline, "
-    "judge its impact on the mentioned company's stock for a LONG-TERM investor. "
-    "Read context carefully: 'cuts costs' is bullish, 'cuts guidance' is bearish; "
-    "'beats but warns' is roughly neutral. Output ONLY a JSON array, one object "
-    "per headline, in the same order, each: "
-    '{"i": <number>, "score": <float -1..1>, "label": "positive"|"negative"|"neutral"}. '
-    "score = +1 very bullish, 0 neutral, -1 very bearish. No prose, no code fences."
-)
-
-
-def _client():
-    """Return a Groq client, or None when unavailable (no key / package)."""
-    if not USE_LLM_SENTIMENT:
-        return None
-    try:
-        from groq import Groq
-    except ImportError:
-        return None
-    if not GROQ_API_KEY or GROQ_API_KEY.startswith("PASTE_"):
-        return None
-    return Groq(api_key=GROQ_API_KEY)
-
-
-def is_available() -> bool:
-    return _client() is not None
-
-
-# Strip the "groq/" prefix the CrewAI config uses — the raw SDK wants the bare id.
-_MODEL = NEWS_LLM_MODEL.split("/", 1)[-1]
-
-
-def _label_of(score: float) -> str:
-    return "positive" if score > 0.05 else "negative" if score < -0.05 else "neutral"
-
-
-def _score_batch(client, headlines: list[str]) -> list[dict | None]:
-    """Score one batch. Returns per-headline dict or None on any failure."""
-    numbered = "\n".join(f"{i}. {h}" for i, h in enumerate(headlines))
-    try:
-        resp = client.chat.completions.create(
-            model=_MODEL,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": numbered},
-            ],
-            temperature=0.0,
-            max_tokens=1500,
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content.strip()
-        data = json.loads(raw)
-        # The model may wrap the array in a key (json_object mode); unwrap it.
-        if isinstance(data, dict):
-            arr = next((v for v in data.values() if isinstance(v, list)), None)
-        else:
-            arr = data
-        if not isinstance(arr, list):
-            return [None] * len(headlines)
-
-        out: list[dict | None] = [None] * len(headlines)
-        for obj in arr:
-            if not isinstance(obj, dict):
-                continue
-            idx = obj.get("i")
-            if not isinstance(idx, int) or not (0 <= idx < len(headlines)):
-                continue
-            try:
-                score = max(-1.0, min(1.0, float(obj.get("score"))))
-            except (TypeError, ValueError):
-                continue
-            label = obj.get("label")
-            if label not in ("positive", "negative", "neutral"):
-                label = _label_of(score)
-            out[idx] = {"score": round(score, 4), "label": label}
-        return out
-    except Exception as exc:  # noqa: BLE001 — never break the pipeline
-        log.warning("LLM judge batch failed (%s); falling back to FinBERT", exc)
-        return [None] * len(headlines)
-
-
-def score_headlines(headlines: list[str]) -> list[dict | None]:
-    """
-    Score each headline in [-1, 1] (FinBERT `score` convention).
-
-    Returns a list the same length as `headlines`; each element is
-    {"score": float, "label": str} or None (caller should fall back).
-    Fully graceful: returns all-None when Groq is unavailable.
-    """
-    if not headlines:
-        return []
-    client = _client()
-    if client is None:
-        return [None] * len(headlines)
-
-    results: list[dict | None] = []
-    for start in range(0, len(headlines), _BATCH):
-        batch = headlines[start:start + _BATCH]
-        results.extend(_score_batch(client, batch))
-    return results
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/sentiment/scorer.py
-# ────────────────────────────────────────────────────────────────────────────
-
-"""
-SentimentScorer: FinBERT primary, VADER fallback.
-
-Rank formula (v3):
-    rank_score = |sentiment_score| × message_density × trust_weight
-
-Time decay is NOT stored in rank_score — it is applied at read time by the
-dashboard and the aggregator, so a score keeps decaying as the article ages
-instead of being frozen at the moment it was scored. `time_weight` is still
-recorded on the row for reference/analysis.
-
-sentiment_score = FinBERT P(positive) - P(negative), continuous in [-1, 1]
-                  (VADER compound when FinBERT is below FINBERT_MIN_CONF)
-
-message_density = this source's share of the window, normalised to (0, 1] so
-                  rank_score stays bounded and comparable across cycles
-
-trust_weight = 1.0  for Tier-1 sources (Reuters, Dow Jones, SEC, FDA)
-             = 0.75 for everything else
-
-time_weight  = exp( -ln(2) / HALFLIFE_HOURS × hours_old )
-               → article published NOW gets 1.0
-               → 24-h-old article gets 0.5 (with default 24-h half-life)
-               (recorded on the row; applied live by readers, not baked into
-                rank_score — see above)
-"""
-from __future__ import annotations
-import datetime
-import logging
-import math
-from collections import Counter
-from typing import List
-
-from config.settings import (
-    SOURCE_TRUST, DEFAULT_TRUST_WEIGHT, TIME_DECAY_HALFLIFE_HOURS
-)
-from src.collectors.rss_collector import RawArticle
-from src.storage.models import SentimentResult
-from src.sentiment.ticker_extractor import extract_tickers, tickers_to_str
-from .finbert import FinBERTScorer
-from .vader import score as vader_score
-from .llm_judge import score_headlines
-
-log = logging.getLogger(__name__)
-
-_LN2 = math.log(2)
-
-
-def _trust_weight(source: str) -> float:
-    return SOURCE_TRUST.get(source, DEFAULT_TRUST_WEIGHT)
-
-
-def _time_weight(published: datetime.datetime | None) -> float:
-    """Exponential decay based on article age."""
-    if published is None:
-        return 1.0
-    now = datetime.datetime.utcnow()
-    # Ensure naive comparison
-    if published.tzinfo is not None:
-        published = published.replace(tzinfo=None)
-    hours_old = max(0.0, (now - published).total_seconds() / 3600)
-    return math.exp(-_LN2 / TIME_DECAY_HALFLIFE_HOURS * hours_old)
-
-
-class SentimentScorer:
-    """
-    FinBERT primary; VADER fallback when FinBERT confidence < FINBERT_MIN_CONF.
-    rank_score = |sentiment_score| × density × trust_weight × time_weight
-    """
-
-    def __init__(self):
-        self._finbert = FinBERTScorer()
-
-    def score_articles(
-        self,
-        articles: List[RawArticle],
-        window_articles: List[RawArticle] | None = None,
-    ) -> List[SentimentResult]:
-        if not articles:
-            return []
-
-        # Message density = share of the window contributed by this article's
-        # source, normalised to (0, 1]. The raw count was unusable as a rank
-        # factor: a source with 50k rows (StockTwits) gave every one of its
-        # posts a 10-50x multiplier over a CNBC story, so rank_score measured
-        # how chatty a source is rather than how important the news is. It was
-        # also unbounded, making scores incomparable across cycles.
-        all_articles = window_articles or articles
-        source_counts = Counter(a.source for a in all_articles)
-        max_count = max(source_counts.values()) if source_counts else 1
-
-        texts = [f"{a.title}. {a.body}"[:512] for a in articles]
-        finbert_results = self._finbert.score_batch(texts)
-
-        # Free-tier Groq LLM judge over the headlines — reads nuance FinBERT
-        # misses ("cuts costs" bullish vs "cuts guidance" bearish). Returns
-        # None per item when Groq is unavailable, so FinBERT/VADER still drive
-        # the fully-offline path. Attribution is title-based, so judge titles.
-        llm_results = score_headlines([a.title for a in articles])
-
-        results: List[SentimentResult] = []
-        for article, fb, llm, text in zip(articles, finbert_results, llm_results, texts):
-            density = source_counts[article.source] / max_count
-            tw      = _trust_weight(article.source)
-            dw      = _time_weight(article.published)
-
-            # VADER is computed once for every article: it is stored as an
-            # independent second opinion, and reused as the fallback below.
-            vader_compound = vader_score(text).compound
-
-            # FinBERT fields are always recorded for reference/display when the
-            # model was confident, regardless of which engine drives the score.
-            if fb is not None:
-                finbert_label = fb.label
-                finbert_score = fb.score
-                finbert_conf  = fb.confidence
-            else:
-                finbert_label = finbert_score = finbert_conf = None
-
-            # Sentiment priority: LLM judge (nuance) → FinBERT → VADER. Sign is
-            # preserved; all three use the same [-1, 1] convention.
-            if llm is not None:
-                sentiment_score = llm["score"]
-                if finbert_label is None:
-                    finbert_label = llm["label"]   # give the UI a label to show
-            elif fb is not None:
-                # fb.score is already continuous polarity in [-1, 1]; it carries
-                # the model's confidence in its magnitude, so multiplying by
-                # fb.confidence again would double-count it.
-                sentiment_score = fb.score
-            else:
-                # VADER fallback (FinBERT below FINBERT_MIN_CONF or errored)
-                sentiment_score = vader_compound
-                log.debug("VADER fallback for: %s", article.title[:60])
-
-            # rank_score is the *undecayed* base. Time decay is applied when the
-            # score is read (dashboard `_ranked_rows`, aggregator
-            # `_live_time_weight`) so it keeps decaying as the article ages.
-            # Baking dw in here meant the readers multiplied by decay a second
-            # time — an article scored 12h after publication was decayed twice.
-            rank_score = abs(sentiment_score) * density * tw
-
-            # Extract tickers from title (fast, no body needed)
-            tickers = extract_tickers(article.title)
-            tickers_str = tickers_to_str(tickers)
-
-            results.append(SentimentResult(
-                article_id      = 0,
-                source          = article.source,
-                title           = article.title,
-                url             = article.url,
-                published       = article.published,
-                finbert_label   = finbert_label,
-                finbert_score   = finbert_score,
-                finbert_conf    = finbert_conf,
-                vader_compound  = vader_compound,
-                sentiment_score = sentiment_score,
-                message_density = density,
-                trust_weight    = tw,
-                time_weight     = dw,
-                rank_score      = rank_score,
-                tickers         = tickers_str,
-                image_url       = getattr(article, "image_url", "") or "",
-                scored_at       = datetime.datetime.utcnow(),
-            ))
-        return results
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/sentiment/ticker_extractor.py
-# ────────────────────────────────────────────────────────────────────────────
-
-"""
-Ticker extractor: finds stock ticker symbols mentioned in article text.
-
-Three pass strategy (ordered by precision):
-  1. $TICKER  — explicit dollar-prefix (highest precision)
-  2. ALL-CAPS words filtered against TICKER_UNIVERSE (medium precision)
-  3. Company name substring match from COMPANY_TO_TICKER (catches "Apple", "Tesla" etc.)
-"""
-from __future__ import annotations
-import re
-import logging
-from typing import Sequence
-
-from config.tickers import (
-    TICKER_UNIVERSE, COMPANY_TO_TICKER, AMBIGUOUS_NAMES, _STOPWORDS
-)
-
-log = logging.getLogger(__name__)
-
-# Pre-compiled patterns
-_DOLLAR_PAT  = re.compile(r'\$([A-Z]{1,5}(?:\.[A-B])?)')  # $AAPL, $BRK.B
-_ALLCAPS_PAT = re.compile(r'\b([A-Z]{2,5})\b')            # standalone ALL-CAPS
-
-
-def _name_pattern(name: str) -> re.Pattern:
-    """
-    Word-boundary matcher for a company name.
-
-    Plain `name in text` matches inside unrelated words — "meta" inside
-    "Rheinmetall", "ups" inside "groups", "intel" inside "intelligence",
-    "unity" inside "opportunity". Anchoring with \\b removes those.
-    \\b is only useful next to a word character, so it is added conditionally
-    (a name like "at&t" ends in one, "s&p 500" does not start with a symbol).
-    """
-    left  = r'\b' if name[:1].isalnum() else ''
-    right = r'\b' if name[-1:].isalnum() else ''
-    return re.compile(left + re.escape(name) + right)
-
-
-# (name, lowercase pattern, ticker, needs_capital), built once at import
-_COMPANY_PATTERNS: list[tuple[str, re.Pattern, str, bool]] = [
-    (name, _name_pattern(name), ticker, name in AMBIGUOUS_NAMES)
-    for name, ticker in COMPANY_TO_TICKER.items()
-]
-
-
-def _company_matches(text: str, text_lower: str):
-    """Yield tickers whose company name appears as a whole word in *text*."""
-    for name, pat, ticker, needs_capital in _COMPANY_PATTERNS:
-        # cheap substring prefilter first, then the authoritative boundary check
-        if name not in text_lower:
-            continue
-        match = pat.search(text_lower)
-        if not match:
-            continue
-        # Ambiguous aliases must be capitalised in the original headline to
-        # count — "Snap beat estimates" yes, "a snap decision" no. Compare the
-        # matched span back against the original-case text.
-        if needs_capital:
-            spans = [m.start() for m in pat.finditer(text_lower)]
-            if not any(text[i:i + 1].isupper() for i in spans):
-                continue
-        yield ticker
-
-
-def extract_tickers(text: str, *, max_tickers: int = 10) -> list[str]:
-    """
-    Return a sorted list of unique ticker symbols found in *text*.
-    Limited to *max_tickers* to avoid noise from very long articles.
-    """
-    if not text:
-        return []
-
-    # Track which pass found each symbol so truncation can keep the most
-    # reliable ones: $-prefix (1) > company name (2) > bare ALL-CAPS (3).
-    precision: dict[str, int] = {}
-
-    def _add(sym: str, rank: int) -> None:
-        if rank < precision.get(sym, 99):
-            precision[sym] = rank
-
-    # ── Pass 1: $TICKER ────────────────────────────────────────────────────────
-    # No stopword filter here: an explicit cashtag is unambiguous intent, and
-    # several real symbols are also common words ($ON, $OPEN, $NOW, $ALL).
-    for m in _DOLLAR_PAT.finditer(text):
-        sym = m.group(1)
-        if sym in TICKER_UNIVERSE:
-            _add(sym, 1)
-
-    # ── Pass 2: Company names (whole word only) ───────────────────────────────
-    text_lower = text.lower()
-    for ticker in _company_matches(text, text_lower):
-        _add(ticker, 2)
-
-    # ── Pass 3: ALL-CAPS words ─────────────────────────────────────────────────
-    for m in _ALLCAPS_PAT.finditer(text):
-        sym = m.group(1)
-        if sym in TICKER_UNIVERSE and sym not in _STOPWORDS:
-            _add(sym, 3)
-
-    if len(precision) > max_tickers:
-        # Drop the least reliable matches first, then break ties alphabetically
-        keep = sorted(precision, key=lambda s: (precision[s], s))[:max_tickers]
-        return sorted(keep)
-
-    return sorted(precision)
-
-
-def extract_primary_ticker(text: str) -> str | None:
-    """
-    Return the single most prominent ticker, or None.
-    Priority: $-prefix > company name > all-caps.
-    """
-    if not text:
-        return None
-
-    # $-prefix first (explicit cashtag — no stopword filter, see extract_tickers)
-    for m in _DOLLAR_PAT.finditer(text):
-        sym = m.group(1)
-        if sym in TICKER_UNIVERSE:
-            return sym
-
-    # Company name (whole word only)
-    text_lower = text.lower()
-    for ticker in _company_matches(text, text_lower):
-        return ticker
-
-    # All-caps fallback
-    for m in _ALLCAPS_PAT.finditer(text):
-        sym = m.group(1)
-        if sym in TICKER_UNIVERSE and sym not in _STOPWORDS:
-            return sym
-
-    return None
-
-
-def tickers_to_str(tickers: Sequence[str]) -> str:
-    """Serialize ticker list to comma-separated string for DB storage."""
-    return ",".join(tickers) if tickers else ""
-
-
-def str_to_tickers(s: str | None) -> list[str]:
-    """Deserialize comma-separated ticker string from DB."""
-    if not s:
-        return []
-    return [t.strip() for t in s.split(",") if t.strip()]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# FILE: src/sentiment/vader.py
-# ────────────────────────────────────────────────────────────────────────────
-
-from __future__ import annotations
-from dataclasses import dataclass
-
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-
-# VADER ships a general-purpose social-media lexicon that misreads financial
-# language: "beat" is scored as violence (-), "surges", "downgrade" and
-# "all-time high" are absent entirely. "Earnings beat expectations, stock surges
-# to all-time high" scored exactly 0.0 (neutral) before this table was added.
-# Valences are on VADER's -4..+4 scale.
-_FINANCE_LEXICON: dict[str, float] = {
-    # bullish
-    "beat": 2.0, "beats": 2.0, "outperform": 2.4, "outperformed": 2.4,
-    "surge": 2.8, "surges": 2.8, "surged": 2.8, "soar": 3.0, "soars": 3.0,
-    "soared": 3.0, "rally": 2.2, "rallies": 2.2, "rallied": 2.2,
-    "jump": 1.8, "jumps": 1.8, "jumped": 1.8, "climb": 1.4, "climbs": 1.4,
-    "gain": 1.6, "gains": 1.6, "gained": 1.6, "upgrade": 2.4,
-    "upgraded": 2.4, "upgrades": 2.4, "bullish": 2.6, "record": 1.6,
-    "profit": 1.8, "profits": 1.8, "profitable": 2.0, "growth": 1.6,
-    "dividend": 1.2, "buyback": 1.6, "expansion": 1.4, "guidance": 0.4,
-    "raised": 1.6, "raises": 1.6, "topped": 1.8, "tops": 1.8,
-    "breakout": 2.0, "momentum": 1.2, "recovery": 1.6, "rebound": 1.8,
-    # bearish
-    "miss": -2.0, "misses": -2.0, "missed": -2.0, "plunge": -3.0,
-    "plunges": -3.0, "plunged": -3.0, "slump": -2.4, "slumps": -2.4,
-    "tumble": -2.6, "tumbles": -2.6, "tumbled": -2.6, "crash": -3.2,
-    "crashes": -3.2, "crashed": -3.2, "slide": -1.8, "slides": -1.8,
-    "sink": -2.2, "sinks": -2.2, "sank": -2.2, "drop": -1.6, "drops": -1.6,
-    "dropped": -1.6, "fell": -1.6, "falls": -1.6, "decline": -1.8,
-    "declines": -1.8, "downgrade": -2.6, "downgraded": -2.6,
-    "downgrades": -2.6, "bearish": -2.6, "loss": -2.0, "losses": -2.0,
-    "layoff": -2.4, "layoffs": -2.4, "bankruptcy": -3.4, "default": -2.8,
-    "lawsuit": -2.0, "probe": -1.8, "investigation": -1.8, "recall": -2.0,
-    "selloff": -2.4, "sell-off": -2.4, "warning": -2.0, "warns": -2.0,
-    "cuts": -1.4, "slashed": -2.2, "halted": -2.0, "delisted": -3.0,
-    "shortfall": -2.2, "writedown": -2.4, "restructuring": -1.2,
-}
-
-_analyzer = SentimentIntensityAnalyzer()
-_analyzer.lexicon.update(_FINANCE_LEXICON)
-
-
-@dataclass
-class VADERResult:
-    compound: float   # [-1, 1]
-    label:    str     # positive / negative / neutral
-
-
-def score(text: str) -> VADERResult:
-    scores  = _analyzer.polarity_scores(text)
-    compound = scores["compound"]
-    if compound >= 0.05:
-        label = "positive"
-    elif compound <= -0.05:
-        label = "negative"
-    else:
-        label = "neutral"
-    return VADERResult(compound=compound, label=label)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -5438,10 +5402,10 @@ from sqlalchemy import func
 from config.settings import (
     SOURCE_TRUST, DEFAULT_TRUST_WEIGHT, TIME_DECAY_HALFLIFE_HOURS,
 )
-from src.sentiment.finbert import FinBERTScorer
-from src.sentiment.ticker_extractor import extract_tickers, tickers_to_str
-from src.sentiment.vader import score as vader_score
-from src.storage.models import SentimentResult, init_db
+from src.sentiment import FinBERTScorer
+from src.sentiment import extract_tickers, tickers_to_str
+from src.sentiment import score as vader_score
+from src.storage import SentimentResult, init_db
 
 BATCH = 256
 
@@ -5523,7 +5487,7 @@ def main() -> int:
           f"{flipped_sign} sentiment sign flips")
 
     if not args.dry_run:
-        from src.pipeline.aggregator import aggregate_tickers
+        from src.pipeline import aggregate_tickers
         n = aggregate_tickers(db)
         print(f"re-aggregated {n} tickers")
 
@@ -5575,9 +5539,9 @@ log = logging.getLogger("refresh")
 
 
 def main() -> None:
-    from src.storage.models import init_db
-    from src.pipeline.crew import SentimentCrew
-    from src.pipeline.fundamentals import run_fundamentals_cycle
+    from src.storage import init_db
+    from src.pipeline import SentimentCrew
+    from src.pipeline import run_fundamentals_cycle
 
     log.info("1/3  news cycle (collect → score → aggregate) …")
     SentimentCrew().run_cycle()

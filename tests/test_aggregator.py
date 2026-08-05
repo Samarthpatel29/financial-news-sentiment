@@ -16,8 +16,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from src.storage.models import Base, SentimentResult, TickerSentiment
-from src.pipeline.aggregator import aggregate_tickers, _live_time_weight
+from src.storage import Base, SentimentResult, TickerSentiment
+from src.pipeline import aggregate_tickers, _live_time_weight
 
 
 @pytest.fixture

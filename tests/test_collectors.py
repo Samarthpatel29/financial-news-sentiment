@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import pytest
 
-from src.collectors.rss_collector import RSSCollector, RawArticle
+from src.collectors import RSSCollector, RawArticle
 
 
 class TestRSSCollector:
@@ -31,7 +31,7 @@ class TestRSSCollector:
             ]
 
         monkeypatch.setattr(
-            "src.collectors.rss_collector.RSSCollector._fetch_feed",
+            "src.collectors.RSSCollector._fetch_feed",
             fake_fetch,
         )
         collector = RSSCollector(feeds={"test_feed": "https://fake.example.com/rss"})

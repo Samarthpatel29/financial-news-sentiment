@@ -37,10 +37,10 @@ from sqlalchemy import func
 from config.settings import (
     SOURCE_TRUST, DEFAULT_TRUST_WEIGHT, TIME_DECAY_HALFLIFE_HOURS,
 )
-from src.sentiment.finbert import FinBERTScorer
-from src.sentiment.ticker_extractor import extract_tickers, tickers_to_str
-from src.sentiment.vader import score as vader_score
-from src.storage.models import SentimentResult, init_db
+from src.sentiment import FinBERTScorer
+from src.sentiment import extract_tickers, tickers_to_str
+from src.sentiment import score as vader_score
+from src.storage import SentimentResult, init_db
 
 BATCH = 256
 
@@ -122,7 +122,7 @@ def main() -> int:
           f"{flipped_sign} sentiment sign flips")
 
     if not args.dry_run:
-        from src.pipeline.aggregator import aggregate_tickers
+        from src.pipeline import aggregate_tickers
         n = aggregate_tickers(db)
         print(f"re-aggregated {n} tickers")
 

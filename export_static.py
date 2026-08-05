@@ -46,8 +46,8 @@ def main() -> None:
         _make_session, _ranked_rows, _ranked_tickers, _get_stats,
         _fundamental_rows, _signal_accuracy, _get_narrative,
     )
-    from src.utils.market_hours import market_status
-    from src.collectors.price_history import get_price_stats, get_candles
+    from src.utils import market_status
+    from src.collectors import get_price_stats, get_candles
 
     if os.path.isdir(OUT):
         shutil.rmtree(OUT)

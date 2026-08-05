@@ -13,7 +13,7 @@ These lock in the fixes for "SELL on a stock that actually went up":
 """
 from __future__ import annotations
 
-from src.pipeline.fundamentals import (
+from src.pipeline import (
     _price_score,
     _continuation_label,
     _signal_of,
@@ -116,11 +116,11 @@ class TestLlmJudgeGracefulFallback:
     def test_no_key_returns_all_none(self, monkeypatch):
         # With no Groq key the judge must return None per item so the caller
         # falls back to FinBERT/VADER — the fully-offline path.
-        import src.sentiment.llm_judge as judge
+        import src.sentiment as judge
         monkeypatch.setattr(judge, "GROQ_API_KEY", "")
         out = judge.score_headlines(["Acme cuts costs", "Acme cuts guidance"])
         assert out == [None, None]
 
     def test_empty_input(self):
-        import src.sentiment.llm_judge as judge
+        import src.sentiment as judge
         assert judge.score_headlines([]) == []

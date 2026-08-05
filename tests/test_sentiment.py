@@ -2,9 +2,9 @@
 from __future__ import annotations
 import pytest
 
-from src.sentiment.vader import score as vader_score
-from src.sentiment.scorer import SentimentScorer
-from src.collectors.rss_collector import RawArticle
+from src.sentiment import score as vader_score
+from src.sentiment import SentimentScorer
+from src.collectors import RawArticle
 
 
 class TestVADER:
@@ -26,7 +26,7 @@ class TestVADER:
 class TestSentimentScorer:
     def test_score_articles_vader_fallback(self, monkeypatch):
         # Force FinBERT to return None (low-confidence path) so VADER kicks in
-        from src.sentiment import finbert as fb_module
+        import src.sentiment as fb_module
 
         monkeypatch.setattr(
             fb_module.FinBERTScorer,
@@ -53,7 +53,7 @@ class TestSentimentScorer:
         assert r.rank_score >= 0
 
     def test_density_weighting(self, monkeypatch):
-        from src.sentiment import finbert as fb_module
+        import src.sentiment as fb_module
 
         monkeypatch.setattr(
             fb_module.FinBERTScorer,
@@ -85,7 +85,7 @@ class TestSentimentScorer:
         """
         import datetime
 
-        from src.sentiment import finbert as fb_module
+        import src.sentiment as fb_module
 
         monkeypatch.setattr(
             fb_module.FinBERTScorer,

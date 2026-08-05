@@ -13,9 +13,9 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from src.storage.models import Base, SignalHistory
-import src.pipeline.fundamentals as fund
-import src.collectors.price_history as ph
+from src.storage import Base, SignalHistory
+import src.pipeline as fund
+import src.collectors as ph
 
 
 @pytest.fixture

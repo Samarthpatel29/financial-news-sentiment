@@ -1,4 +1,10 @@
+"""storage — merged from 1 modules for a simpler layout."""
 from __future__ import annotations
+
+# ======================================================================
+# from storage/models.py
+# ======================================================================
+
 import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Text, create_engine
@@ -223,3 +229,4 @@ def init_db() -> Session:
 
     Base.metadata.create_all(engine)
     return Session(engine)
+

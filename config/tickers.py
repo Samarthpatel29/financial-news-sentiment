@@ -129,7 +129,7 @@ TICKER_UNIVERSE -= _DELISTED
 # on Finviz"). If an export is present, its tickers are ADDED to the universe so
 # the screener drives what we track. Absent → we keep the built-in universe.
 try:
-    from src.collectors.finviz_screener import load_screener_tickers
+    from src.collectors import load_screener_tickers
     _screener_tickers = load_screener_tickers()
     if _screener_tickers:
         TICKER_UNIVERSE |= _screener_tickers

@@ -34,9 +34,9 @@ log = logging.getLogger("refresh")
 
 
 def main() -> None:
-    from src.storage.models import init_db
-    from src.pipeline.crew import SentimentCrew
-    from src.pipeline.fundamentals import run_fundamentals_cycle
+    from src.storage import init_db
+    from src.pipeline import SentimentCrew
+    from src.pipeline import run_fundamentals_cycle
 
     log.info("1/3  news cycle (collect → score → aggregate) …")
     SentimentCrew().run_cycle()

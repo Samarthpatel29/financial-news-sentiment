@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from config.tickers import TICKER_UNIVERSE, COMPANY_TO_TICKER
-from src.sentiment.ticker_extractor import extract_tickers, extract_primary_ticker
+from src.sentiment import extract_tickers, extract_primary_ticker
 
 
 class TestSubstringFalsePositives:

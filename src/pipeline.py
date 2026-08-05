@@ -1,3 +1,251 @@
+"""pipeline — merged from 3 modules for a simpler layout."""
+from __future__ import annotations
+
+# ======================================================================
+# from pipeline/aggregator.py
+# ======================================================================
+
+"""
+Per-ticker sentiment aggregator.
+
+After each pipeline cycle this module queries the last TICKER_WINDOW_HOURS of
+SentimentResults, groups by extracted ticker symbol, and upserts a
+TickerSentiment row for each ticker.
+
+Weighted average formula:
+    weight_i = |sentiment_score_i| × trust_weight_i × time_weight_i
+    composite = Σ(sentiment_score_i × weight_i) / Σ(weight_i)
+
+If all weights are 0 (all articles neutral with score≈0) the simple mean is
+used as a fallback.
+"""
+import datetime
+import logging
+import math
+from collections import defaultdict
+from typing import NamedTuple
+
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+
+from config.settings import (
+    TICKER_WINDOW_HOURS, MIN_ARTICLES_PER_TICKER, TIME_DECAY_HALFLIFE_HOURS,
+    SOCIAL_SOURCES,
+)
+from src.storage import SentimentResult, TickerSentiment
+from src.sentiment import str_to_tickers
+
+log = logging.getLogger(__name__)
+
+_LN2 = math.log(2)
+
+
+def _live_time_weight(row: SentimentResult, now: datetime.datetime) -> float:
+    """Exponential age decay evaluated at *now* (see aggregate_tickers)."""
+    stamp = row.published or row.scored_at
+    if stamp is None:
+        return 1.0
+    if stamp.tzinfo is not None:
+        stamp = stamp.replace(tzinfo=None)
+    hours_old = max(0.0, (now - stamp).total_seconds() / 3600)
+    return math.exp(-_LN2 / TIME_DECAY_HALFLIFE_HOURS * hours_old)
+
+
+class _TickerBucket(NamedTuple):
+    scores:       list[float]
+    weights:      list[float]
+    trust_vals:   list[float]
+    sources:      list[str]
+    urls:         list[str]
+    headlines:    list[tuple[float, str]]   # (rank_score, title)
+
+
+def aggregate_tickers(db: Session) -> int:
+    """
+    Recompute TickerSentiment from the last TICKER_WINDOW_HOURS of data.
+    Returns the number of tickers updated.
+    """
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=TICKER_WINDOW_HOURS)
+
+    rows: list[SentimentResult] = (
+        db.query(SentimentResult)
+        .filter(SentimentResult.scored_at >= cutoff)
+        .all()
+    )
+
+    if not rows:
+        log.info("Aggregator: no rows in window — skipping")
+        return 0
+
+    # ── Bucket articles by ticker ──────────────────────────────────────────────
+    buckets: dict[str, dict] = defaultdict(lambda: {
+        "scores": [], "weights": [], "trust_vals": [],
+        "sources": [], "urls": [], "headlines": [],
+        "social_scores": [], "social_weights": [],
+    })
+
+    now = datetime.datetime.utcnow()
+    for r in rows:
+        tickers = str_to_tickers(r.tickers)
+        if not tickers:
+            continue
+
+        # Retail chatter is bucketed separately — see SOCIAL_SOURCES.
+        if r.source in SOCIAL_SOURCES:
+            sw = abs(r.sentiment_score) ** 0.5 * (r.trust_weight or 1.0) * _live_time_weight(r, now)
+            for ticker in tickers:
+                buckets[ticker]["social_scores"].append(r.sentiment_score)
+                buckets[ticker]["social_weights"].append(sw)
+            continue
+
+        # Time decay is recomputed against *now*, not read from the stored
+        # column. The stored value is a snapshot from when the article was
+        # scored, so a 7-day-old headline kept the 1.0 weight it had when it
+        # was fresh and never actually decayed inside the aggregation window.
+        #
+        # Confidence weight uses sqrt(|sentiment|), not |sentiment|. Linear
+        # magnitude let one extreme headline (score ≈ -0.9, weight 0.9) outvote
+        # ten mildly-positive ones (score ≈ +0.1, weight 0.1 each), flipping the
+        # composite sign away from what most of the coverage actually said. sqrt
+        # compresses that 9:1 dominance to ~3:1 so the majority carries.
+        w = abs(r.sentiment_score) ** 0.5 * (r.trust_weight or 1.0) * _live_time_weight(r, now)
+
+        for ticker in tickers:
+            b = buckets[ticker]
+            b["scores"].append(r.sentiment_score)
+            b["weights"].append(w)
+            b["trust_vals"].append(r.trust_weight or 1.0)
+            b["sources"].append(r.source)
+            b["urls"].append(r.url or "")
+            # Decay is applied here too, so "top headline" means the most
+            # important *recent* story. rank_score is stored undecayed, so
+            # ranking on it raw surfaced a 5-day-old "Micron Plunges" over
+            # today's "Micron Surges 12%" — a headline that contradicted the
+            # very score it was supposed to illustrate.
+            b["headlines"].append(
+                ((r.rank_score or 0.0) * _live_time_weight(r, now), r.title)
+            )
+
+    if not buckets:
+        log.info("Aggregator: no ticker mentions found in window")
+        return 0
+
+    # ── Upsert TickerSentiment ─────────────────────────────────────────────────
+    updated = 0
+    fresh: set[str] = set()
+    for ticker, b in buckets.items():
+        scores   = b["scores"]
+        weights  = b["weights"]
+        total_w  = sum(weights)
+
+        # Require a minimum sample before publishing a score. A single article
+        # can produce a near-±1.0 composite, which then outranks tickers backed
+        # by hundreds of articles.
+        if len(scores) < MIN_ARTICLES_PER_TICKER:
+            continue
+        fresh.add(ticker)
+
+        if total_w > 0:
+            composite = sum(s * w for s, w in zip(scores, weights)) / total_w
+        else:
+            composite = sum(scores) / len(scores)  # plain mean fallback
+
+        n        = len(scores)
+        bullish  = sum(1 for s in scores if s >  0.05)
+        bearish  = sum(1 for s in scores if s < -0.05)
+        neutral  = n - bullish - bearish
+        avg_trust = sum(b["trust_vals"]) / len(b["trust_vals"])
+
+        # Social chatter, aggregated the same way but reported separately
+        s_scores  = b["social_scores"]
+        s_weights = b["social_weights"]
+        s_total_w = sum(s_weights)
+        if s_scores:
+            social = (sum(s * w for s, w in zip(s_scores, s_weights)) / s_total_w
+                      if s_total_w > 0 else sum(s_scores) / len(s_scores))
+        else:
+            social = 0.0
+
+        # Best headline = highest rank_score. Index is taken straight from the
+        # max() rather than looked up by title, which mis-attributed the source
+        # and URL whenever two articles shared a headline.
+        best_idx, (best_rank, best_title) = max(
+            enumerate(b["headlines"]), key=lambda pair: pair[1][0]
+        )
+        best_source = b["sources"][best_idx]
+        best_url    = b["urls"][best_idx]
+
+        # Upsert
+        existing = (
+            db.query(TickerSentiment)
+            .filter(TickerSentiment.ticker == ticker)
+            .first()
+        )
+        if existing:
+            existing.composite_score = round(composite, 4)
+            existing.article_count   = n
+            existing.bullish_count   = bullish
+            existing.bearish_count   = bearish
+            existing.neutral_count   = neutral
+            existing.avg_trust       = round(avg_trust, 3)
+            existing.top_headline    = best_title
+            existing.top_source      = best_source
+            existing.top_url         = best_url
+            existing.social_score    = round(social, 4)
+            existing.social_count    = len(s_scores)
+            existing.last_updated    = datetime.datetime.utcnow()
+        else:
+            db.add(TickerSentiment(
+                ticker          = ticker,
+                composite_score = round(composite, 4),
+                article_count   = n,
+                bullish_count   = bullish,
+                bearish_count   = bearish,
+                neutral_count   = neutral,
+                avg_trust       = round(avg_trust, 3),
+                top_headline    = best_title,
+                top_source      = best_source,
+                top_url         = best_url,
+                social_score    = round(social, 4),
+                social_count    = len(s_scores),
+                last_updated    = datetime.datetime.utcnow(),
+            ))
+        updated += 1
+
+    # ── Drop tickers that fell out of the window ──────────────────────────────
+    # The aggregator only ever upserted, so a ticker that stopped being in the
+    # news kept its last score forever and was still served as if current.
+    dropped = 0
+    # If this cycle produced nothing (feeds down, network error), keep whatever
+    # is already there rather than wiping the board.
+    stale = (
+        db.query(TickerSentiment)
+        .filter(~TickerSentiment.ticker.in_(fresh))
+        .all()
+        if fresh else []
+    )
+    for row in stale:
+        # Keep rows that still carry a live fundamentals/filing signal, but zero
+        # out the news half so nothing stale is presented as current news.
+        if (row.filing_count_7d or 0) > 0:
+            row.article_count = 0
+            row.composite_score = 0.0
+            row.bullish_count = row.bearish_count = row.neutral_count = 0
+            row.social_score = 0.0
+            row.social_count = 0
+        else:
+            db.delete(row)
+        dropped += 1
+
+    db.commit()
+    log.info("Aggregator: upserted %d tickers, cleared %d stale", updated, dropped)
+    return updated
+
+
+# ======================================================================
+# from pipeline/fundamentals.py
+# ======================================================================
+
 """
 Long-term fundamentals engine — Phases C & D.
 
@@ -16,7 +264,6 @@ Runs on a slow cadence (filings change a few times a day, not every minute):
 
 See docs/FUNDAMENTALS_PLAN.md.
 """
-from __future__ import annotations
 import datetime
 import logging
 
@@ -28,10 +275,10 @@ from config.settings import (
     USE_GROQ_SUMMARIES, REPORT_HISTORY_MAX_FILINGS,
     SIGNAL_BUY_THRESHOLD, SIGNAL_SELL_THRESHOLD,
 )
-from src.collectors.edgar_collector import EdgarCollector, LOOKBACK_DAYS
-from src.collectors.edgar_extractor import extract_section
+from src.collectors import EdgarCollector, LOOKBACK_DAYS
+from src.collectors import extract_section
 from src.sentiment import SentimentScorer
-from src.storage.models import Filing, TickerSentiment
+from src.storage import Filing, TickerSentiment
 
 log = logging.getLogger(__name__)
 
@@ -319,7 +566,7 @@ def _fetch_recom(ticker: str) -> float | None:
     if _finviz_fails["n"] >= 4:
         return None
     try:
-        from src.collectors.finviz_verify import verify
+        from src.collectors import verify
         data = verify(ticker)
         if data and data.get("recom") is not None:
             _finviz_fails["n"] = 0
@@ -353,7 +600,7 @@ def _aggregate(db: Session) -> None:
     momentum is part of the prediction (not display-only) so a stock that has
     actually risen isn't rated SELL off a single bad news week.
     """
-    from src.collectors.price_history import get_price_stats
+    from src.collectors import get_price_stats
 
     week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=LOOKBACK_DAYS)
 
@@ -443,8 +690,8 @@ def _signal_of(score: float) -> str:
 
 def _record_signals(db: Session) -> None:
     """Snapshot each ticker's current signal once per day."""
-    from src.collectors.price_history import get_price_stats
-    from src.storage.models import SignalHistory
+    from src.collectors import get_price_stats
+    from src.storage import SignalHistory
 
     today = datetime.datetime.utcnow().date()
     rows = db.query(TickerSentiment).filter(TickerSentiment.filing_count_7d > 0).all()
@@ -485,8 +732,8 @@ def _score_signals(db: Session) -> None:
     horizons: weekly (≥7 days old) and monthly (≥30 days old). Monthly uses
     slightly wider thresholds because prices move more over a month.
     """
-    from src.collectors.price_history import get_price_stats
-    from src.storage.models import SignalHistory
+    from src.collectors import get_price_stats
+    from src.storage import SignalHistory
 
     now = datetime.datetime.utcnow()
     week_cut  = now - datetime.timedelta(days=7)
@@ -520,3 +767,258 @@ def _score_signals(db: Session) -> None:
         s.correct_30d = _grade(s.signal, s.pct_change_30d, up=2.0, hold_band=6.0)
 
     db.commit()
+
+
+# ======================================================================
+# from pipeline/crew.py
+# ======================================================================
+
+import datetime
+import logging
+import os
+import re
+import time
+import concurrent.futures
+from typing import List
+
+from config.settings import GROQ_API_KEY, CREW_LLM_MODEL, E2E_DEADLINE, PIPELINE_INTERVAL
+from src.collectors import RSSCollector, ScraperCollector, BrokerCollector, StockTwitsCollector
+from src.sentiment import SentimentScorer
+from src.storage import Article, SentimentResult, init_db
+
+log = logging.getLogger(__name__)
+
+# How far back to look when de-duplicating by headline text
+_TITLE_DEDUP_HOURS = 48
+
+_PUNCT_RE = re.compile(r"[^a-z0-9 ]+")
+_WS_RE    = re.compile(r"\s+")
+
+
+def _title_key(title: str) -> str:
+    """
+    Normalised headline used for cross-source de-duplication.
+
+    The same story arrives via Google News, Yahoo and the publisher's own feed
+    under three different URLs, so URL-only dedup let it through three times —
+    inflating message_density and every affected ticker's article_count.
+    """
+    return _WS_RE.sub(" ", _PUNCT_RE.sub("", (title or "").lower())).strip()
+
+
+def _make_crew():
+    """
+    Build a CrewAI crew that uses Groq's free tier (llama-3.1-8b-instant).
+    Returns None gracefully if crewai or groq are not installed / key missing.
+    """
+    if not GROQ_API_KEY or GROQ_API_KEY == "PASTE_YOUR_GROQ_KEY_HERE":
+        log.info("GROQ_API_KEY not set — narrative summaries disabled")
+        return None
+    try:
+        from crewai import Agent, Crew, Task, LLM
+    except ImportError:
+        log.warning("crewai not installed — narrative summaries disabled")
+        return None
+
+    llm = LLM(
+        model=CREW_LLM_MODEL,       # "groq/llama-3.1-8b-instant"
+        api_key=GROQ_API_KEY,
+    )
+
+    analyst = Agent(
+        role="Financial News Analyst",
+        goal=(
+            "Synthesize the top-ranked financial news items into a concise "
+            "market narrative. Highlight the strongest bullish and bearish signals."
+        ),
+        backstory=(
+            "You are a CFA-level analyst who distils real-time news into "
+            "actionable market intelligence in under 80 words."
+        ),
+        llm=llm,
+        verbose=False,
+    )
+
+    summarize_task = Task(
+        description=(
+            "Given these ranked news items (title | source | sentiment | rank), "
+            "write a market summary under 80 words:\n\n{ranked_items}"
+        ),
+        expected_output="A market narrative under 80 words.",
+        agent=analyst,
+    )
+
+    return Crew(agents=[analyst], tasks=[summarize_task], verbose=False)
+
+
+class SentimentCrew:
+    """
+    Runs the full pipeline every PIPELINE_INTERVAL seconds:
+      collect  →  deduplicate  →  score  →  persist  →  (optional) Groq narrative
+    """
+
+    def __init__(self):
+        self._rss        = RSSCollector()
+        self._scraper    = ScraperCollector()
+        self._broker     = BrokerCollector()
+        self._stocktwits = StockTwitsCollector()
+        self._scorer     = SentimentScorer()
+        self._db         = init_db()
+        self._crew       = _make_crew()
+
+    def run_cycle(self) -> List[SentimentResult]:
+        t0 = time.monotonic()
+        log.info("── Pipeline cycle started ──")
+
+        # 1. Collect from all sources in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            rss_f     = pool.submit(self._rss.collect)
+            scraper_f = pool.submit(self._scraper.collect)
+            broker_f  = pool.submit(self._broker.collect)
+            st_f      = pool.submit(self._stocktwits.collect)
+            rss_arts     = rss_f.result()
+            scraper_arts = scraper_f.result()
+            broker_arts  = broker_f.result()
+            st_arts      = st_f.result()
+
+        all_articles = rss_arts + scraper_arts + broker_arts + st_arts
+        log.info("Collected %d articles  (%.1fs)", len(all_articles), time.monotonic() - t0)
+
+        if not all_articles:
+            log.warning("No articles — skipping cycle")
+            return []
+
+        # 2. Deduplicate by URL *and* headline within this batch
+        seen: set[str] = set()
+        seen_titles: set[str] = set()
+        unique = []
+        for a in all_articles:
+            tkey = _title_key(a.title)
+            if not a.url or a.url in seen:
+                continue
+            if tkey and tkey in seen_titles:
+                continue
+            seen.add(a.url)
+            if tkey:
+                seen_titles.add(tkey)
+            unique.append(a)
+        log.info("After batch dedup: %d unique articles", len(unique))
+
+        # 3. Filter out URLs already in the database (cross-cycle dedup)
+        existing_urls: set[str] = {
+            row[0] for row in
+            self._db.query(SentimentResult.url)
+            .filter(SentimentResult.url.in_([a.url for a in unique]))
+            .all()
+        }
+        new_articles = [a for a in unique if a.url not in existing_urls]
+
+        # 3a. Drop stories already stored under a different URL (same headline
+        #     re-syndicated by another feed) within the recent window.
+        if new_articles:
+            since = datetime.datetime.utcnow() - datetime.timedelta(hours=_TITLE_DEDUP_HOURS)
+            recent_titles = {
+                _title_key(t)
+                for (t,) in self._db.query(SentimentResult.title)
+                                    .filter(SentimentResult.scored_at >= since)
+                                    .all()
+            }
+            recent_titles.discard("")
+            before = len(new_articles)
+            new_articles = [a for a in new_articles
+                            if _title_key(a.title) not in recent_titles]
+            if before != len(new_articles):
+                log.info("Dropped %d re-syndicated duplicates", before - len(new_articles))
+
+        log.info("New articles not yet in DB: %d", len(new_articles))
+
+        # 3b. Backfill images for existing rows that have none —
+        #     feeds re-serve the same articles, so the fresh fetch often has
+        #     an image the older DB row is missing.
+        fresh_imgs = {a.url: a.image_url for a in unique if a.image_url}
+        if existing_urls and fresh_imgs:
+            rows_missing_img = (
+                self._db.query(SentimentResult)
+                .filter(SentimentResult.url.in_(list(existing_urls)))
+                .filter((SentimentResult.image_url == "") | (SentimentResult.image_url.is_(None)))
+                .all()
+            )
+            filled = 0
+            for row in rows_missing_img:
+                img = fresh_imgs.get(row.url)
+                if img:
+                    row.image_url = img
+                    filled += 1
+            if filled:
+                self._db.commit()
+                log.info("Backfilled images on %d existing articles", filled)
+
+        if not new_articles:
+            # Still re-aggregate: composites carry live time decay and the
+            # stale-ticker sweep, both of which must keep moving even on a
+            # quiet cycle. Returning early here froze the board whenever the
+            # feeds had nothing new.
+            log.info("No new articles this cycle — re-aggregating only")
+            aggregate_tickers(self._db)
+            return []
+
+        # 4. Score sentiment
+        results = self._scorer.score_articles(new_articles, window_articles=all_articles)
+        log.info("Scored %d articles  (%.1fs)", len(results), time.monotonic() - t0)
+
+        # 5. Persist to SQLite.
+        #    The articles table was never written, so every SentimentResult
+        #    carried article_id = 0 and the article bodies were discarded after
+        #    scoring. Store the article first, then point the score at its id.
+        article_rows = [
+            Article(
+                source     = a.source,
+                title      = a.title,
+                url        = a.url,
+                published  = a.published,
+                body       = getattr(a, "body", "") or "",
+            )
+            for a in new_articles
+        ]
+        try:
+            self._db.add_all(article_rows)
+            self._db.flush()          # assigns primary keys without committing
+            for result, row in zip(results, article_rows):
+                result.article_id = row.id
+        except Exception as exc:
+            # Never let article bookkeeping cost us the sentiment scores
+            self._db.rollback()
+            log.warning("Article persistence failed (scores still saved): %s", exc)
+
+        self._db.add_all(results)
+        self._db.commit()
+
+        # 5b. Per-ticker aggregation (fast — pure DB read/upsert)
+        n_tickers = aggregate_tickers(self._db)
+        log.info("Ticker aggregation: %d tickers updated  (%.1fs)", n_tickers, time.monotonic() - t0)
+
+        # 6. Optional Groq narrative (only if budget allows)
+        elapsed     = time.monotonic() - t0
+        budget_left = E2E_DEADLINE - elapsed - 10
+        if self._crew and budget_left > 15:
+            top = sorted(results, key=lambda r: r.rank_score, reverse=True)[:10]
+            ranked_str = "\n".join(
+                f"{r.title[:70]} | {r.source} | {r.sentiment_score:.2f} | {r.rank_score:.2f}"
+                for r in top
+            )
+            try:
+                narrative = str(self._crew.kickoff(inputs={"ranked_items": ranked_str}))
+                log.info("Groq narrative: %s", narrative[:200])
+                os.makedirs("data", exist_ok=True)
+                with open("data/narrative.txt", "w") as f:
+                    f.write(narrative)
+            except Exception as exc:
+                log.warning("Groq narrative failed: %s", exc)
+
+        total = time.monotonic() - t0
+        log.info("Cycle done in %.1fs  (budget: %ds)", total, E2E_DEADLINE)
+        if total > E2E_DEADLINE:
+            log.error("E2E deadline exceeded: %.1fs > %ds", total, E2E_DEADLINE)
+
+        return results
+
