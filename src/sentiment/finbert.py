@@ -11,8 +11,8 @@ log = logging.getLogger(__name__)
 @dataclass
 class FinBERTResult:
     label:      str    # positive | negative | neutral
-    score:      float  # mapped: +1 / -1 / 0
-    confidence: float  # raw softmax probability
+    score:      float  # continuous polarity: P(positive) - P(negative), in [-1, 1]
+    confidence: float  # raw softmax probability of the winning class
 
 
 class FinBERTScorer:
@@ -52,13 +52,19 @@ class FinBERTScorer:
                 best = max(item_scores, key=lambda x: x["score"])
                 if best["score"] < FINBERT_MIN_CONF:
                     results.append(None)
-                else:
-                    label_map = {"positive": 1.0, "negative": -1.0, "neutral": 0.0}
-                    results.append(FinBERTResult(
-                        label=best["label"].lower(),
-                        score=label_map.get(best["label"].lower(), 0.0),
-                        confidence=best["score"],
-                    ))
+                    continue
+                # Continuous polarity rather than a hard +1/-1/0 label.
+                # The label-map version collapsed every neutral article to
+                # exactly 0.0, which zeroed its rank_score AND its aggregation
+                # weight — silently discarding ~80% of the corpus and letting a
+                # small confident minority set each ticker's composite.
+                probs = {s["label"].lower(): s["score"] for s in item_scores}
+                polarity = probs.get("positive", 0.0) - probs.get("negative", 0.0)
+                results.append(FinBERTResult(
+                    label=best["label"].lower(),
+                    score=polarity,
+                    confidence=best["score"],
+                ))
         return results
 
     def score(self, text: str) -> FinBERTResult | None:

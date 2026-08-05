@@ -18,10 +18,7 @@ SentimentIQ-Submission-Code/
 
 # Docs, reports, office files — not needed at runtime
 docs/
-handoff/
-Charts/
-Activity Logs/
-Weekly Reports/
+project-admin/
 *.docx
 *.xlsx
 *.pdf

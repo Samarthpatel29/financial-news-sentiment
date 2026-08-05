@@ -4,7 +4,8 @@
   "outputDirectory": "public",
   "framework": null,
   "rewrites": [
-    { "source": "/api/chat", "destination": "/api/chat.py" }
+    { "source": "/api/chat", "destination": "/api/chat.py" },
+    { "source": "/api/verify", "destination": "/api/verify.py" }
   ],
   "headers": [
     {

@@ -15,6 +15,41 @@ pinned: false
 
 A real-time financial news sentiment analysis system that ingests headlines from 15 free sources, scores them using FinBERT and VADER, ranks them by trust/time-decay weighted scores, and displays results on a live Bloomberg-style dashboard with a built-in AI tutor chatbot. The pipeline auto-fetches around the clock — every 60s in pre-market/after-hours, when overnight news matters most — so the board is always current before the market opens.
 
+## Quick start (for testing)
+
+Requires **Python 3.11+**. From the project folder:
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # create + activate a virtualenv
+pip install -r requirements.txt                      # install dependencies (first run downloads FinBERT ~400 MB)
+cp .env.example .env                                 # optional: add a free Groq key for the chatbot/LLM
+bash start.sh                                         # runs the pipeline + dashboard, opens http://localhost:5001
+```
+
+That's it — the live dashboard streams updates every ~60s. To run the automated tests:
+
+```bash
+pytest tests/ -q
+```
+
+No paid API keys are required; everything runs on free data. The Groq key is optional (the LLM layer falls back to FinBERT without it).
+
+## Project structure
+
+```
+run.py            → single entry point (pipeline + dashboard)
+start.sh          → one-command launch (calls run.py)
+requirements.txt  → dependencies
+src/              → all application code (collectors, sentiment, pipeline, dashboard, storage)
+config/           → settings, ticker universe, sector map
+api/              → serverless functions for the Vercel deploy (chatbot, verify)
+tests/            → automated test suite  ·  scripts/ → maintenance scripts
+docs/             → all documentation (reports, handoff notes, accuracy + differentiation)
+data/             → runtime database (created on first run)
+public/           → generated static snapshot for the web deploy
+project-admin/    → school/admin files (activity logs, charts) — not part of the code
+```
+
 ## Architecture
 
 ```

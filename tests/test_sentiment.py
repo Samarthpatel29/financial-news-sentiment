@@ -70,6 +70,38 @@ class TestSentimentScorer:
         results = scorer.score_articles(articles, window_articles=articles)
         cnbc_results    = [r for r in results if r.source == "cnbc"]
         reuters_results = [r for r in results if r.source == "reuters"]
-        # CNBC should have density=2, Reuters density=1
-        assert cnbc_results[0].message_density == 2.0
-        assert reuters_results[0].message_density == 1.0
+        # Density is the source's share of the window, normalised to (0, 1]:
+        # CNBC contributes 2 of the 2 max => 1.0, Reuters 1 of 2 => 0.5.
+        # Raw counts made rank_score unbounded and let a high-volume source
+        # dominate purely on volume.
+        assert cnbc_results[0].message_density == 1.0
+        assert reuters_results[0].message_density == 0.5
+        assert 0 < reuters_results[0].message_density <= 1.0
+
+    def test_rank_score_excludes_time_decay(self, monkeypatch):
+        """
+        rank_score must be the undecayed base. Decay is applied at read time by
+        the dashboard and the aggregator; baking it in here decayed twice.
+        """
+        import datetime
+
+        from src.sentiment import finbert as fb_module
+
+        monkeypatch.setattr(
+            fb_module.FinBERTScorer,
+            "score_batch",
+            lambda self, texts: [None] * len(texts),
+        )
+
+        old = datetime.datetime.utcnow() - datetime.timedelta(hours=240)
+        scorer = SentimentScorer()
+        articles = [
+            RawArticle(source="cnbc", title="Shares plunge after bankruptcy filing",
+                       url="u1", body="", published=old),
+        ]
+        r = scorer.score_articles(articles)[0]
+
+        assert r.time_weight < 0.01, "a 10-day-old article should decay heavily"
+        expected = abs(r.sentiment_score) * r.message_density * r.trust_weight
+        assert r.rank_score == pytest.approx(expected)
+        assert r.rank_score > r.time_weight  # i.e. decay was NOT multiplied in

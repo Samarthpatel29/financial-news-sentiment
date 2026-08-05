@@ -11,13 +11,56 @@ import re
 import logging
 from typing import Sequence
 
-from config.tickers import TICKER_UNIVERSE, COMPANY_TO_TICKER, _STOPWORDS
+from config.tickers import (
+    TICKER_UNIVERSE, COMPANY_TO_TICKER, AMBIGUOUS_NAMES, _STOPWORDS
+)
 
 log = logging.getLogger(__name__)
 
 # Pre-compiled patterns
 _DOLLAR_PAT  = re.compile(r'\$([A-Z]{1,5}(?:\.[A-B])?)')  # $AAPL, $BRK.B
 _ALLCAPS_PAT = re.compile(r'\b([A-Z]{2,5})\b')            # standalone ALL-CAPS
+
+
+def _name_pattern(name: str) -> re.Pattern:
+    """
+    Word-boundary matcher for a company name.
+
+    Plain `name in text` matches inside unrelated words — "meta" inside
+    "Rheinmetall", "ups" inside "groups", "intel" inside "intelligence",
+    "unity" inside "opportunity". Anchoring with \\b removes those.
+    \\b is only useful next to a word character, so it is added conditionally
+    (a name like "at&t" ends in one, "s&p 500" does not start with a symbol).
+    """
+    left  = r'\b' if name[:1].isalnum() else ''
+    right = r'\b' if name[-1:].isalnum() else ''
+    return re.compile(left + re.escape(name) + right)
+
+
+# (name, lowercase pattern, ticker, needs_capital), built once at import
+_COMPANY_PATTERNS: list[tuple[str, re.Pattern, str, bool]] = [
+    (name, _name_pattern(name), ticker, name in AMBIGUOUS_NAMES)
+    for name, ticker in COMPANY_TO_TICKER.items()
+]
+
+
+def _company_matches(text: str, text_lower: str):
+    """Yield tickers whose company name appears as a whole word in *text*."""
+    for name, pat, ticker, needs_capital in _COMPANY_PATTERNS:
+        # cheap substring prefilter first, then the authoritative boundary check
+        if name not in text_lower:
+            continue
+        match = pat.search(text_lower)
+        if not match:
+            continue
+        # Ambiguous aliases must be capitalised in the original headline to
+        # count — "Snap beat estimates" yes, "a snap decision" no. Compare the
+        # matched span back against the original-case text.
+        if needs_capital:
+            spans = [m.start() for m in pat.finditer(text_lower)]
+            if not any(text[i:i + 1].isupper() for i in spans):
+                continue
+        yield ticker
 
 
 def extract_tickers(text: str, *, max_tickers: int = 10) -> list[str]:
@@ -28,33 +71,39 @@ def extract_tickers(text: str, *, max_tickers: int = 10) -> list[str]:
     if not text:
         return []
 
-    found: set[str] = set()
+    # Track which pass found each symbol so truncation can keep the most
+    # reliable ones: $-prefix (1) > company name (2) > bare ALL-CAPS (3).
+    precision: dict[str, int] = {}
+
+    def _add(sym: str, rank: int) -> None:
+        if rank < precision.get(sym, 99):
+            precision[sym] = rank
 
     # ── Pass 1: $TICKER ────────────────────────────────────────────────────────
+    # No stopword filter here: an explicit cashtag is unambiguous intent, and
+    # several real symbols are also common words ($ON, $OPEN, $NOW, $ALL).
     for m in _DOLLAR_PAT.finditer(text):
         sym = m.group(1)
         if sym in TICKER_UNIVERSE:
-            found.add(sym)
+            _add(sym, 1)
 
-    # ── Pass 2: ALL-CAPS words ─────────────────────────────────────────────────
+    # ── Pass 2: Company names (whole word only) ───────────────────────────────
+    text_lower = text.lower()
+    for ticker in _company_matches(text, text_lower):
+        _add(ticker, 2)
+
+    # ── Pass 3: ALL-CAPS words ─────────────────────────────────────────────────
     for m in _ALLCAPS_PAT.finditer(text):
         sym = m.group(1)
         if sym in TICKER_UNIVERSE and sym not in _STOPWORDS:
-            found.add(sym)
+            _add(sym, 3)
 
-    # ── Pass 3: Company name substrings ───────────────────────────────────────
-    text_lower = text.lower()
-    for name, ticker in COMPANY_TO_TICKER.items():
-        if name in text_lower:
-            found.add(ticker)
+    if len(precision) > max_tickers:
+        # Drop the least reliable matches first, then break ties alphabetically
+        keep = sorted(precision, key=lambda s: (precision[s], s))[:max_tickers]
+        return sorted(keep)
 
-    tickers = sorted(found)
-    if len(tickers) > max_tickers:
-        # Keep the most "specific" ones — prefer those found by $-prefix or
-        # company name (Passes 1 & 3). For simplicity just trim the sorted list.
-        tickers = tickers[:max_tickers]
-
-    return tickers
+    return sorted(precision)
 
 
 def extract_primary_ticker(text: str) -> str | None:
@@ -65,17 +114,16 @@ def extract_primary_ticker(text: str) -> str | None:
     if not text:
         return None
 
-    # $-prefix first
+    # $-prefix first (explicit cashtag — no stopword filter, see extract_tickers)
     for m in _DOLLAR_PAT.finditer(text):
         sym = m.group(1)
         if sym in TICKER_UNIVERSE:
             return sym
 
-    # Company name
+    # Company name (whole word only)
     text_lower = text.lower()
-    for name, ticker in COMPANY_TO_TICKER.items():
-        if name in text_lower:
-            return ticker
+    for ticker in _company_matches(text, text_lower):
+        return ticker
 
     # All-caps fallback
     for m in _ALLCAPS_PAT.finditer(text):

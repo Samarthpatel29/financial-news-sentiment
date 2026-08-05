@@ -1,6 +1,8 @@
 from __future__ import annotations
+import datetime
 import logging
 import os
+import re
 import time
 import concurrent.futures
 from typing import List
@@ -8,10 +10,27 @@ from typing import List
 from config.settings import GROQ_API_KEY, CREW_LLM_MODEL, E2E_DEADLINE, PIPELINE_INTERVAL
 from src.collectors import RSSCollector, ScraperCollector, BrokerCollector, StockTwitsCollector
 from src.sentiment import SentimentScorer
-from src.storage.models import SentimentResult, init_db
+from src.storage.models import Article, SentimentResult, init_db
 from src.pipeline.aggregator import aggregate_tickers
 
 log = logging.getLogger(__name__)
+
+# How far back to look when de-duplicating by headline text
+_TITLE_DEDUP_HOURS = 48
+
+_PUNCT_RE = re.compile(r"[^a-z0-9 ]+")
+_WS_RE    = re.compile(r"\s+")
+
+
+def _title_key(title: str) -> str:
+    """
+    Normalised headline used for cross-source de-duplication.
+
+    The same story arrives via Google News, Yahoo and the publisher's own feed
+    under three different URLs, so URL-only dedup let it through three times —
+    inflating message_density and every affected ticker's article_count.
+    """
+    return _WS_RE.sub(" ", _PUNCT_RE.sub("", (title or "").lower())).strip()
 
 
 def _make_crew():
@@ -96,13 +115,20 @@ class SentimentCrew:
             log.warning("No articles — skipping cycle")
             return []
 
-        # 2. Deduplicate by URL within this batch
+        # 2. Deduplicate by URL *and* headline within this batch
         seen: set[str] = set()
+        seen_titles: set[str] = set()
         unique = []
         for a in all_articles:
-            if a.url and a.url not in seen:
-                seen.add(a.url)
-                unique.append(a)
+            tkey = _title_key(a.title)
+            if not a.url or a.url in seen:
+                continue
+            if tkey and tkey in seen_titles:
+                continue
+            seen.add(a.url)
+            if tkey:
+                seen_titles.add(tkey)
+            unique.append(a)
         log.info("After batch dedup: %d unique articles", len(unique))
 
         # 3. Filter out URLs already in the database (cross-cycle dedup)
@@ -113,6 +139,24 @@ class SentimentCrew:
             .all()
         }
         new_articles = [a for a in unique if a.url not in existing_urls]
+
+        # 3a. Drop stories already stored under a different URL (same headline
+        #     re-syndicated by another feed) within the recent window.
+        if new_articles:
+            since = datetime.datetime.utcnow() - datetime.timedelta(hours=_TITLE_DEDUP_HOURS)
+            recent_titles = {
+                _title_key(t)
+                for (t,) in self._db.query(SentimentResult.title)
+                                    .filter(SentimentResult.scored_at >= since)
+                                    .all()
+            }
+            recent_titles.discard("")
+            before = len(new_articles)
+            new_articles = [a for a in new_articles
+                            if _title_key(a.title) not in recent_titles]
+            if before != len(new_articles):
+                log.info("Dropped %d re-syndicated duplicates", before - len(new_articles))
+
         log.info("New articles not yet in DB: %d", len(new_articles))
 
         # 3b. Backfill images for existing rows that have none —
@@ -137,14 +181,42 @@ class SentimentCrew:
                 log.info("Backfilled images on %d existing articles", filled)
 
         if not new_articles:
-            log.info("No new articles this cycle — skipping scoring")
+            # Still re-aggregate: composites carry live time decay and the
+            # stale-ticker sweep, both of which must keep moving even on a
+            # quiet cycle. Returning early here froze the board whenever the
+            # feeds had nothing new.
+            log.info("No new articles this cycle — re-aggregating only")
+            aggregate_tickers(self._db)
             return []
 
         # 4. Score sentiment
         results = self._scorer.score_articles(new_articles, window_articles=all_articles)
         log.info("Scored %d articles  (%.1fs)", len(results), time.monotonic() - t0)
 
-        # 5. Persist to SQLite
+        # 5. Persist to SQLite.
+        #    The articles table was never written, so every SentimentResult
+        #    carried article_id = 0 and the article bodies were discarded after
+        #    scoring. Store the article first, then point the score at its id.
+        article_rows = [
+            Article(
+                source     = a.source,
+                title      = a.title,
+                url        = a.url,
+                published  = a.published,
+                body       = getattr(a, "body", "") or "",
+            )
+            for a in new_articles
+        ]
+        try:
+            self._db.add_all(article_rows)
+            self._db.flush()          # assigns primary keys without committing
+            for result, row in zip(results, article_rows):
+                result.article_id = row.id
+        except Exception as exc:
+            # Never let article bookkeeping cost us the sentiment scores
+            self._db.rollback()
+            log.warning("Article persistence failed (scores still saved): %s", exc)
+
         self._db.add_all(results)
         self._db.commit()
 

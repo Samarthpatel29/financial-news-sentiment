@@ -13,9 +13,8 @@ src/
 config/
 tests/
 docs/
-Charts/
-Activity Logs/
-Weekly Reports/
+project-admin/
+scripts/
 *.docx
 *.xlsx
 *.pdf
