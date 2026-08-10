@@ -22,6 +22,10 @@ data/narrative.txt
 # macOS
 .DS_Store
 
+# Build/handover artifacts & office temp files
+*.zip
+~$*
+
 # Logs
 *.log
 

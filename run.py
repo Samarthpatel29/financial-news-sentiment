@@ -28,9 +28,9 @@ log = logging.getLogger("run")
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config.settings import PIPELINE_INTERVAL, DATABASE_URL
-from src.pipeline.crew import SentimentCrew
-from src.storage.models import init_db
-from src.utils.market_hours import market_status, pipeline_interval_seconds
+from src.pipeline import SentimentCrew
+from src.storage import init_db
+from src.utils import market_status, pipeline_interval_seconds
 
 
 def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
@@ -78,8 +78,8 @@ def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
     # slow 6-hour cadence. First run is delayed 2 min so the news cycle can
     # populate the tracked-ticker list first.
     def fundamentals_cycle():
-        from src.storage.models import init_db
-        from src.pipeline.fundamentals import run_fundamentals_cycle
+        from src.storage import init_db
+        from src.pipeline import run_fundamentals_cycle
         try:
             db = init_db()
             n = run_fundamentals_cycle(db)
