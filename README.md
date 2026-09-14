@@ -164,7 +164,7 @@ Each stock's **Buy / Sell / Hold** rating blends **four independent signals**, e
 
 ```
 rating = 0.30·news + 0.30·momentum + 0.25·analysts + 0.15·reports   (renormalised)
-Buy  if rating >  0.12   ·   Sell if rating < −0.12   ·   Hold otherwise
+Buy  if rating > +0.25   ·   Sell if rating < −0.12   ·   Hold otherwise   (config/settings.py)
 ```
 
 > **Design note (important for the integration team):** this is a *sentiment-and-data blend*, **not** a guaranteed price forecast. Earlier versions were ~100% short-term news sentiment, which produced misleading calls (e.g. "Sell" on a stock that was up 70%). Price momentum and analyst consensus were added on **2026-07-24** specifically so ratings line up with market reality and with the built-in Finviz cross-check. The reports signal is deliberately the *lowest* weight because FinBERT flatlines on dry filing text — Groq verdicts do the real work there.
