@@ -15,30 +15,75 @@ pinned: false
 
 A real-time financial news sentiment analysis system that ingests headlines from 15 free sources, scores them using FinBERT and VADER, ranks them by trust/time-decay weighted scores, and displays results on a live Bloomberg-style dashboard with a built-in AI tutor chatbot. The pipeline auto-fetches around the clock — every 60s in pre-market/after-hours, when overnight news matters most — so the board is always current before the market opens.
 
-## Quick start (for testing)
+## How to run it on your own computer
 
-Requires **Python 3.11+**. From the project folder:
+Tested from a fresh `git clone` on a separate folder: install finished and all **88 tests passed**.
 
+### 1. What you need
+- **Python 3.11 or 3.12** (3.13 is *not* supported yet — one dependency, `numpy<2`, has no 3.13 build).
+  Check with `python3.11 --version` (macOS/Linux) or `py -3.11 --version` (Windows).
+- **Git**, an internet connection, and about **3 GB of free disk** (PyTorch + the FinBERT model).
+- **No paid accounts or API keys.** Everything uses free data.
+
+### 2. Download and install (one time, ~5 minutes)
+
+**macOS / Linux**
 ```bash
-python -m venv .venv && source .venv/bin/activate   # create + activate a virtualenv
-pip install -r requirements.txt                      # install dependencies (first run downloads FinBERT ~400 MB)
-cp .env.example .env                                 # optional: add a free Groq key for the chatbot/LLM
-bash start.sh                                         # runs the pipeline + dashboard, opens http://localhost:5001
+git clone https://github.com/Samarthpatel29/financial-news-sentiment.git
+cd financial-news-sentiment
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-That's it — the live dashboard streams updates every ~60s. To run the automated tests:
-
-```bash
-pytest tests/ -q
+**Windows (PowerShell)**
+```powershell
+git clone https://github.com/Samarthpatel29/financial-news-sentiment.git
+cd financial-news-sentiment
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env
 ```
 
-No paid API keys are required; everything runs on free data. The Groq key is optional (the LLM layer falls back to FinBERT without it).
+### 3. Start the app
+With the virtualenv active, from the project folder:
+```bash
+python run.py
+```
+Then open **http://localhost:5001** in your browser. (On macOS/Linux, `bash start.sh` does the same thing and opens the browser for you.) Press `Ctrl+C` to stop.
+
+### 4. What to expect on the first run
+- The first start downloads the **FinBERT model (~440 MB)** from Hugging Face. Later starts use the cached copy.
+- A fresh clone starts with an **empty database**. The page loads right away; news, tickers and Buy/Sell/Hold signals fill in over the first **1–3 minutes** as the pipeline runs. The accuracy track record needs ~7 days of history before it shows graded results.
+- **Groq key is optional.** Without it the dashboard, news, sentiment and signals all work; only the AI narrative, filing summaries and chatbot are turned off. To enable them, get a free key at https://console.groq.com and put it in `.env` as `GROQ_API_KEY=...`.
+- Port 5001 busy? Change `DASHBOARD_PORT` in `.env` (for example `DASHBOARD_PORT=5050`) and start again.
+
+### 5. Run the tests
+```bash
+python -m pytest -q        # expected: 88 passed
+```
+
+### Other ways to run
+```bash
+python run.py --once          # run one pipeline cycle and exit (no dashboard)
+python run.py --no-dashboard  # pipeline only, keeps running
+```
+
+### Troubleshooting
+| Problem | Fix |
+|---|---|
+| `pip install` fails on numpy | You are on Python 3.13. Recreate the venv with Python 3.11 or 3.12. |
+| `Address already in use` | Another app uses port 5001 — set `DASHBOARD_PORT` to another number. |
+| Page loads but shows no data | Wait 1–3 minutes on the first run; check the terminal for "cycle complete". |
+| Chatbot says it is unavailable | No `GROQ_API_KEY` in `.env` (optional feature). |
 
 ## Project structure
 
 ```
 run.py             → single entry point (pipeline + dashboard)
-start.sh           → one-command launch (calls run.py)
+start.sh           → one-command launch for macOS/Linux (calls run.py)
 requirements.txt   → dependencies
 src/
   collectors.py    → all data collectors (RSS news, StockTwits, SEC/EDGAR, Finviz, prices)
@@ -83,7 +128,7 @@ RSS Feeds + StockTwits + SEC EDGAR (15 live sources)
 
 **News (10):** CNBC · MarketWatch · PR Newswire · GlobeNewswire · Seeking Alpha · Investing.com · Business Insider · Fortune · Google News · FDA press releases
 
-**Filings:** SEC EDGAR (10-K / 10-Q / 8-K, via `edgar_collector.py`)
+**Filings:** SEC EDGAR (10-K / 10-Q / 8-K, in `src/collectors.py`)
 
 **Social (4):** **StockTwits** (free social sentiment — the no-cost alternative to the paid X/Twitter API) · Reddit (r/stocks, r/wallstreetbets, r/investing)
 
@@ -129,7 +174,7 @@ Buy  if rating >  0.12   ·   Sell if rating < −0.12   ·   Hold otherwise
 **Independent verification:** the *Verify on Finviz* tab fetches live analyst data and reports **AGREE / MIXED / DISAGREE** vs our rating, so any prediction can be checked against an external source.
 
 ## Stack (100% free / open-source)
-- **Python 3.11** — all code
+- **Python 3.11 / 3.12** — all code
 - **FinBERT** (ProsusAI/finbert) — financial NLP
 - **VADER** — fallback sentiment
 - **Flask + SSE** — real-time dashboard
@@ -137,22 +182,6 @@ Buy  if rating >  0.12   ·   Sell if rating < −0.12   ·   Hold otherwise
 - **Groq** (LLaMA 3.1 8B, free tier) — AI narrative + chatbot
 - **CrewAI** — agentic narrative orchestration
 - **aiohttp + feedparser + BeautifulSoup** — data collection
-
-## Quick Start
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python run.py
-# Dashboard at http://localhost:5001
-```
-
-Or just run:
-```bash
-bash start.sh
-```
-
-First run downloads the FinBERT model (~440 MB) from HuggingFace; subsequent runs are cached. Optional: put a free `GROQ_API_KEY` in a `.env` file to enable the AI narrative, filing summaries, and chatbot (everything else works without it).
 
 ## Public deployment (Vercel)
 

@@ -105,7 +105,7 @@ def run_pipeline_loop(crew: SentimentCrew, once: bool = False):
 
 def run_dashboard():
     from src.dashboard.app import app
-    port = int(os.getenv("DASHBOARD_PORT", 5000))
+    port = int(os.getenv("DASHBOARD_PORT", 5001))  # 5000 is taken by macOS AirPlay
     log.info("Dashboard starting on http://localhost:%d", port)
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
 

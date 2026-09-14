@@ -72,24 +72,24 @@ python run.py                      # → http://localhost:5001
 ```
 run.py  ── starts two schedulers + the Flask app in threads
   │
-  ├─ NEWS cycle (every 60s, faster off-hours)      src/pipeline/crew.py
+  ├─ NEWS cycle (every 60s, faster off-hours)      src/pipeline.py
   │     collect → dedup → FinBERT/VADER score → rank → aggregate per ticker
-  │     sources: src/collectors/{rss,scraper,stocktwits,broker}_collector.py
+  │     sources: src/collectors.py
   │
-  ├─ FUNDAMENTALS cycle (every 6h)                 src/pipeline/fundamentals.py
+  ├─ FUNDAMENTALS cycle (every 6h)                 src/pipeline.py
   │     SEC EDGAR filings → extract sections → FinBERT + Groq verdict
   │     → blend 4 signals (news/momentum/analysts/reports) → Buy/Sell/Hold
-  │     price: src/collectors/price_history.py   analysts: finviz_verify.py
+  │     price: src/collectors.py   analysts: collectors.verify
   │
   └─ Flask dashboard + JSON API                    src/dashboard/app.py
         SSE live updates · one big template        src/dashboard/templates/index.html
-        chatbot                                     src/dashboard/chatbot.py
+        chatbot                                     src/dashboard/app.py
 
-Storage: SQLite via SQLAlchemy                      src/storage/models.py
+Storage: SQLite via SQLAlchemy                      src/storage.py
 ```
 
 ### The prediction
-`src/pipeline/fundamentals.py :: _aggregate()` computes, per ticker:
+`src/pipeline.py :: _aggregate()` computes, per ticker:
 ```
 rating = 0.30·news + 0.30·price_momentum + 0.25·analyst_consensus + 0.15·reports
 ```
@@ -107,19 +107,19 @@ the design rationale.
 | Settings | `config/settings.py` | feeds, weights, windows, dead-feed lists |
 | Ticker universe | `config/tickers.py` | symbols + company-name map |
 | Sector map | `config/sectors.py` | ticker → sector |
-| News collectors | `src/collectors/{rss,scraper,stocktwits,broker}_collector.py` | |
-| SEC filings | `src/collectors/edgar_collector.py`, `edgar_extractor.py` | fetch + section-extract |
-| Prices / candles | `src/collectors/price_history.py` | yfinance, cached |
-| Analyst check | `src/collectors/finviz_verify.py` | Finviz scrape, cached 30 min |
-| Sentiment | `src/sentiment/{finbert,vader,scorer}.py` | FinBERT primary, VADER fallback |
-| Ticker extraction | `src/sentiment/ticker_extractor.py` | 3-pass ($TAG / ALL-CAPS / name) |
-| News pipeline | `src/pipeline/crew.py` | one 60s cycle |
-| Prediction engine | `src/pipeline/fundamentals.py` | filings + 4-signal blend + self-scoring |
-| Per-ticker rollup | `src/pipeline/aggregator.py` | news → ticker sentiment |
-| DB models | `src/storage/models.py` | additive migrations; **never drops columns** |
+| News collectors | `src/collectors.py` (`RSSCollector`, `ScraperCollector`, `StockTwitsCollector`, `BrokerCollector`) | |
+| SEC filings | `src/collectors.py` (`EdgarCollector`) | fetch + section-extract |
+| Prices / candles | `src/collectors.py` (`get_price_stats`, `get_candles`) | yfinance, cached |
+| Analyst check | `src/collectors.py` (`verify`) | Finviz scrape, cached 30 min |
+| Sentiment | `src/sentiment.py` (`FinBERTScorer`, `score`, `SentimentScorer`) | FinBERT primary, VADER fallback |
+| Ticker extraction | `src/sentiment.py` (`extract_tickers`) | 3-pass ($TAG / ALL-CAPS / name) |
+| News pipeline | `src/pipeline.py` (`SentimentCrew`) | one 60s cycle |
+| Prediction engine | `src/pipeline.py` (`run_fundamentals_cycle`, `_aggregate`) | filings + 4-signal blend + self-scoring |
+| Per-ticker rollup | `src/pipeline.py` (`aggregate_tickers`) | news → ticker sentiment |
+| DB models | `src/storage.py` | additive migrations; **never drops columns** |
 | Web app / API | `src/dashboard/app.py` | all endpoints |
 | Front-end | `src/dashboard/templates/index.html` | single self-contained page (HTML/CSS/JS) |
-| Chatbot | `src/dashboard/chatbot.py` | Groq relay, two personas |
+| Chatbot | `src/dashboard/app.py` (`/api/chat`) + `api/chat.py` | Groq relay, two personas |
 | Static export | `export_static.py` | renders `./public` for Vercel |
 | Serverless | `api/chat.py`, `api/verify.py` | the only server-side code on Vercel |
 

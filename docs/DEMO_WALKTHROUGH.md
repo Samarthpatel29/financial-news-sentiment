@@ -61,12 +61,12 @@ screen, in plain English. It explains — it does not tell you to buy or sell.
 ## Part 2 — Technical walkthrough (for an engineer)
 
 **1. Where the data comes from.**
-Every ~60 seconds `src/pipeline/crew.py` pulls news from free RSS feeds,
-StockTwits, and Reddit. Every 6 hours `src/pipeline/fundamentals.py` pulls SEC
+Every ~60 seconds `src/pipeline.py` (`SentimentCrew`) pulls news from free RSS feeds,
+StockTwits, and Reddit. Every 6 hours `src/pipeline.py` (`run_fundamentals_cycle`, `_aggregate`) pulls SEC
 filings from EDGAR. All sources are free; no paid API.
 
 **2. How news is scored.**
-`src/sentiment/` — FinBERT (a finance-trained model) rates each headline from −1
+`src/sentiment.py` — FinBERT (a finance-trained model) rates each headline from −1
 to +1. VADER is the backup. `ticker_extractor.py` figures out which stock each
 headline is about.
 
@@ -80,7 +80,7 @@ add up to the rating.
 
 **4. Storage.**
 Everything is saved in a SQLite file (`data/sentiment.db`) through
-`src/storage/models.py`. Migrations only add columns, never drop them.
+`src/storage.py`. Migrations only add columns, never drop them.
 
 **5. The web layer.**
 `src/dashboard/app.py` is Flask. It reads the database and returns JSON
@@ -89,7 +89,7 @@ live updates over SSE. The whole front-end is one file:
 `src/dashboard/templates/index.html`.
 
 **6. The Finviz check is live.**
-`src/collectors/finviz_verify.py` fetches the Finviz quote page, reads the
+`src/collectors.py` (`verify`) fetches the Finviz quote page, reads the
 analyst rating and performance, and compares them to our signal. Open the Verify
 tab, then open the same ticker on finviz.com to show they match.
 
