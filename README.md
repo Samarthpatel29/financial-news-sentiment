@@ -19,6 +19,18 @@ A real-time financial news sentiment analysis system that ingests headlines from
 
 Tested from a fresh `git clone` on a separate folder: install finished and all **88 tests passed**.
 
+### The easy way (one command, does everything)
+
+**macOS / Linux:** `bash start.sh`  ·  **Windows:** double-click `start.bat`
+
+The **first time** you run it, it creates the virtual environment and installs
+everything (about 5 minutes). **Every time after that** it skips all of that and
+just starts the site and opens your browser — a few seconds. It remembers with a
+marker file at `.venv/.installed`; delete that (or the whole `.venv` folder) to
+force a clean reinstall.
+
+The manual steps below do the same thing by hand, if you prefer to see each one.
+
 ### 1. What you need
 - **Python 3.11 or 3.12** (3.13 is *not* supported yet — one dependency, `numpy<2`, has no 3.13 build).
   Check with `python3.11 --version` (macOS/Linux) or `py -3.11 --version` (Windows).
@@ -60,6 +72,25 @@ Then open **http://localhost:5001** in your browser. (On macOS/Linux, `bash star
 - **Groq key is optional.** Without it the dashboard, news, sentiment and signals all work; only the AI narrative, filing summaries and chatbot are turned off. To enable them, get a free key at https://console.groq.com and put it in `.env` as `GROQ_API_KEY=...`.
 - Port 5001 busy? Change `DASHBOARD_PORT` in `.env` (for example `DASHBOARD_PORT=5050`) and start again.
 
+### Keeping it running all the time
+
+The app is free to run, so you can just leave it up.
+
+```bash
+bash scripts/keep_running.sh      # starts it and restarts it if it ever crashes
+```
+
+Logs go to `data/app.log`. To have it start by itself every time you log in
+(macOS):
+
+```bash
+bash scripts/install_autostart.sh     # turn on
+bash scripts/uninstall_autostart.sh   # turn off
+```
+
+Your computer has to be awake for the local site to answer. The public Vercel
+site is separate and stays online on its own.
+
 ### 5. Run the tests
 ```bash
 python -m pytest -q        # expected: 88 passed
@@ -83,7 +114,7 @@ python run.py --no-dashboard  # pipeline only, keeps running
 
 ```
 run.py             → single entry point (pipeline + dashboard)
-start.sh           → one-command launch for macOS/Linux (calls run.py)
+start.sh / start.bat → one-command setup + launch (macOS/Linux · Windows)
 requirements.txt   → dependencies
 src/
   collectors.py    → all data collectors (RSS news, StockTwits, SEC/EDGAR, Finviz, prices)
@@ -159,7 +190,7 @@ Each stock's **Buy / Sell / Hold** rating blends **four independent signals**, e
 |---|---|---|
 | 📰 **News** (this week) | 30% | FinBERT sentiment of the week's headlines |
 | 📈 **Price momentum** | 30% | 1-yr / 5-yr returns + distance from all-time high (yfinance) |
-| 👔 **Analyst consensus** | 25% | Finviz "Recom" (1=Strong Buy … 5=Strong Sell), mapped to −1…+1 |
+| 👔 **Analyst consensus** | 25% | Finnhub analyst ratings, collapsed to a 1=Strong Buy … 5=Strong Sell consensus and mapped to −1…+1 (Finviz scrape as fallback) |
 | 🏛️ **SEC filings** | 15% | Groq verdict (Improving/Stable/Deteriorating) on 10-K/10-Q/8-K |
 
 ```
@@ -169,9 +200,17 @@ Buy  if rating > +0.25   ·   Sell if rating < −0.12   ·   Hold otherwise   (
 
 > **Design note (important for the integration team):** this is a *sentiment-and-data blend*, **not** a guaranteed price forecast. Earlier versions were ~100% short-term news sentiment, which produced misleading calls (e.g. "Sell" on a stock that was up 70%). Price momentum and analyst consensus were added on **2026-07-24** specifically so ratings line up with market reality and with the built-in Finviz cross-check. The reports signal is deliberately the *lowest* weight because FinBERT flatlines on dry filing text — Groq verdicts do the real work there.
 
+> **Correction (2026-09-20):** the analyst component was sourced by scraping
+> Finviz, which bot-blocks server-side requests, so it was populated in only
+> **94 of 4,661 logged signals (2.0%)** — for 98% of predictions the weights
+> renormalised and this was really a *three*-signal model. It now reads
+> Finnhub's free API (99.2% populated across the 125 tracked tickers), with the
+> scrape as fallback. Accuracy figures recorded before this date were produced
+> by the three-signal blend, not the four-signal design described above.
+
 **Honest self-scoring:** every day the model's Buy/Sell/Hold calls are snapshotted and graded 7 days later against the actual price (`SignalHistory` table). The header shows the running accuracy (`accuracy self-check: N% of M signals`).
 
-**Independent verification:** the *Verify on Finviz* tab fetches live analyst data and reports **AGREE / MIXED / DISAGREE** vs our rating, so any prediction can be checked against an external source.
+**Independent verification:** the *Verify on Finviz* tab fetches live analyst data and reports **AGREE / MIXED / DISAGREE** vs our rating, so any prediction can be checked against an external source. Since 2026-09-20 this is genuinely independent: the rating's own analyst input comes from Finnhub, whereas before — on the rare occasions that input was present at all — it came from the same Finviz `Recom` the verify tab fetches, so the check was comparing Finviz against itself.
 
 ## Stack (100% free / open-source)
 - **Python 3.11 / 3.12** — all code
@@ -180,6 +219,7 @@ Buy  if rating > +0.25   ·   Sell if rating < −0.12   ·   Hold otherwise   (
 - **Flask + SSE** — real-time dashboard
 - **SQLAlchemy + SQLite** — storage
 - **Groq** (LLaMA 3.1 8B, free tier) — AI narrative + chatbot
+- **Finnhub** (free tier, 60 calls/min) — analyst consensus for the ratings
 - **CrewAI** — agentic narrative orchestration
 - **aiohttp + feedparser + BeautifulSoup** — data collection
 
