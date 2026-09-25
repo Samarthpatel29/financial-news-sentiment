@@ -11,6 +11,35 @@ Live site: **https://financial-news-sentiment.vercel.app**
 - **Sentiment Buddy** chatbot that knows every stock on the board
 - **Auto-refresh**: launchd job every 2h (Mac on) → pushes → Vercel redeploys. Live app (`start.sh`) streams every ~60s (that's the real-time <1–2 min deliverable).
 
+## ⚠️ Fixed 2026-09-20 — the analyst component was mostly missing
+
+The blend documents analyst consensus at **25%**, but it was sourced by scraping
+Finviz, which bot-blocks server-side requests. A circuit breaker in
+`_fetch_recom` gave up after 4 failures per cycle, so with ~125 tracked tickers
+only a handful ever got a value: **`comp_analysts` was populated in 94 of 4,661
+logged signals (2.0%)**. For 98% of predictions the weights renormalised and the
+rating was really a *three*-signal blend of news/momentum/filings.
+
+It now comes from **Finnhub**'s free API (60 calls/min, no card), with the
+Finviz scrape kept as a fallback. Analyst counts are collapsed onto the same
+1..5 scale Finviz publishes, so nothing downstream changed.
+
+Measured after the change: **124 of the 125 tracked tickers resolve (99.2%)** —
+the one miss has no analyst coverage at all. A single cold-start fundamentals
+cycle now fills `ticker_sentiment.analyst_recom` for **124 of 127 rows (97.6%)**
+in 157s. Because `_record_signals` snapshots once per ticker per day,
+`signal_history.comp_analysts` reaches that level on the next daily snapshot
+rather than immediately.
+
+Requests are paced under a 50/min cap (the free tier allows 60). A first
+uncached pass costs ~2.5 min; a 24-hour per-ticker cache makes later cycles
+near-free. Pacing is affordable because `_fetch_recom` is only called by this
+6-hourly pass, not by the 120s news cycle.
+
+Consequence for the numbers below: every accuracy figure in this file and in
+`docs/PREDICTION_TRACK_RECORD.md` was produced by the three-signal model. They
+are not a measurement of the documented four-signal design.
+
 ## ⏳ Remaining — needs YOUR input (can't get from the brief alone)
 1. **Finviz Elite CSV** — professor provides the credentials.
    - Screener: https://finviz.com/screener.ashx → **Export** → save as `data/finviz_screener.csv` (the loader auto-picks it up).

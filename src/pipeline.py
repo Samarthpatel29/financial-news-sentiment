@@ -266,6 +266,7 @@ See docs/FUNDAMENTALS_PLAN.md.
 """
 import datetime
 import logging
+import time
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -551,30 +552,120 @@ def _reports_signal(fs: list[Filing]) -> float:
 
 
 def _analyst_signal(recom: float | None) -> float | None:
-    """Finviz analyst consensus 1..5 (1=Strong Buy, 5=Strong Sell) → +1..-1."""
+    """Analyst consensus 1..5 (1=Strong Buy, 5=Strong Sell) → +1..-1."""
     if recom is None:
         return None
     return max(-1.0, min(1.0, (3.0 - recom) / 2.0))
 
 
-# Give up on Finviz for the rest of a cycle after repeated failures (it's
-# blocking us) so aggregation never stalls; analysts just drop from the blend.
+# Give up on a source for the rest of a cycle after repeated failures so
+# aggregation never stalls; analysts just drop from the blend. The two
+# breakers are independent: a Finnhub outage must still let us try Finviz.
 _finviz_fails = {"n": 0}
+_finnhub_fails = {"n": 0}
+
+# Analyst consensus moves slowly (Finnhub publishes monthly buckets), so one
+# lookup per ticker per day keeps steady-state traffic near zero. Misses are
+# cached far more briefly so a transient outage — or a key that gets fixed
+# mid-run — recovers within the hour instead of blanking the component for a
+# day.
+_RECOM_TTL_HIT  = 86_400   # 24 h
+_RECOM_TTL_MISS = 3_600    # 1 h
+_recom_cache: dict[str, tuple[float, float | None]] = {}
+
+# The cache only helps once it is warm. A cold start asks for all ~125 tracked
+# tickers at once, which measured at ~158 calls/min — over the free tier's 60,
+# and enough to get throttled mid-cycle (the breaker tripped at ticker ~120).
+#
+# So we pace: stay under a rolling-minute cap and wait out the window when it
+# is spent. Waiting is affordable *here* specifically — _fetch_recom has one
+# caller, the fundamentals pass, which runs on a 6-hour cadence and is not
+# under the news cycle's 120s E2E budget. Pacing ~125 tickers costs ~2.5 min
+# once a day (the cache absorbs the rest) and gets full coverage in a single
+# cycle. Deferring instead would spread a cold start over 12-18 hours.
+_FINNHUB_MAX_PER_MIN = 50          # 60 allowed; leave headroom
+_FINNHUB_MAX_WAIT    = 65.0        # never block longer than one window
+_finnhub_calls: list[float] = []
+
+
+def _finnhub_wait_for_budget() -> bool:
+    """
+    Block until a Finnhub call fits inside the rolling minute.
+
+    Returns False only if the wait would exceed one window, which should not
+    happen — it is a guard against a clock jump wedging the cycle.
+    """
+    for _ in range(2):
+        now = time.time()
+        cutoff = now - 60.0
+        while _finnhub_calls and _finnhub_calls[0] < cutoff:
+            _finnhub_calls.pop(0)
+        if len(_finnhub_calls) < _FINNHUB_MAX_PER_MIN:
+            return True
+        wait = (_finnhub_calls[0] + 60.0) - now + 0.05
+        if wait <= 0 or wait > _FINNHUB_MAX_WAIT:
+            return False
+        time.sleep(wait)
+    return False
 
 
 def _fetch_recom(ticker: str) -> float | None:
-    if _finviz_fails["n"] >= 4:
-        return None
-    try:
-        from src.collectors import verify
-        data = verify(ticker)
-        if data and data.get("recom") is not None:
-            _finviz_fails["n"] = 0
-            return data["recom"]
-        _finviz_fails["n"] += 1
-    except Exception:
-        _finviz_fails["n"] += 1
-    return None
+    """
+    Analyst consensus on the 1..5 scale, from Finnhub with Finviz as fallback.
+
+    Finviz bot-blocks server-side requests, which left this component — 25% of
+    the blended rating — populated in only ~2% of logged signals. Finnhub's
+    free API is the primary source now; the scrape stays as a backstop.
+    """
+    now = time.time()
+    hit = _recom_cache.get(ticker)
+    if hit is not None:
+        ttl = _RECOM_TTL_HIT if hit[1] is not None else _RECOM_TTL_MISS
+        if (now - hit[0]) < ttl:
+            return hit[1]
+
+    recom = None
+    uncovered = False
+    throttled = False
+
+    if _finnhub_fails["n"] < 4:
+        if not _finnhub_wait_for_budget():
+            throttled = True
+        else:
+            from src.collectors import finnhub_recom_strict, FinnhubError
+            _finnhub_calls.append(time.time())
+            try:
+                recom = finnhub_recom_strict(ticker)
+                # A None here means "no analyst covers this ticker" — a real
+                # answer, so it resets the breaker rather than tripping it.
+                _finnhub_fails["n"] = 0
+                uncovered = recom is None
+            except FinnhubError:
+                _finnhub_fails["n"] += 1
+            except Exception:
+                _finnhub_fails["n"] += 1
+
+    # Only fall back when Finnhub actually failed — not when it told us nobody
+    # covers the ticker (Finviz has nothing to add either), and not when we
+    # simply ran out of budget (we want to ask Finnhub again next cycle).
+    if recom is None and not uncovered and not throttled and _finviz_fails["n"] < 4:
+        try:
+            from src.collectors import verify
+            data = verify(ticker)
+            if data and data.get("recom") is not None:
+                _finviz_fails["n"] = 0
+                recom = data["recom"]
+            else:
+                _finviz_fails["n"] += 1
+        except Exception:
+            _finviz_fails["n"] += 1
+
+    # Never cache a throttled skip: it says nothing about the ticker, and
+    # caching it would suppress the retry that is the whole point of deferring.
+    # Re-stamp rather than reuse `now` — we may have slept for the rate limit.
+    if not throttled:
+        _recom_cache[ticker] = (time.time(), recom)
+    return recom
 
 
 def _continuation_label(score: float) -> str:
@@ -642,8 +733,8 @@ def _aggregate(db: Session) -> None:
             ts.price_return_5y  = pstats.get("return_5y")
             ts.pct_from_ath     = pstats.get("pct_from_ath")
             ts.price_volatility = pstats.get("volatility")
-        # 4) Analyst consensus (Finviz Recom 1..5 → -1..1) so the rating lines up
-        #    with what Wall Street analysts say
+        # 4) Analyst consensus (Finnhub ratings → 1..5 → -1..1) so the rating
+        #    lines up with what Wall Street analysts say
         recom = _fetch_recom(ticker)
         analysts = _analyst_signal(recom)
         ts.analyst_recom  = recom

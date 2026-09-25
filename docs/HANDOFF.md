@@ -30,10 +30,18 @@ news feed, a beginner chatbot, and a one-click Finviz cross-check.
 
 ## 1a. First 30 minutes (start here)
 
+**Fastest path:** clone the repo, then run `bash start.sh` (macOS/Linux) or
+double-click `start.bat` (Windows). The first run builds the virtualenv,
+installs everything, and launches the dashboard; every run after that skips
+straight to launching. Then jump to step 6.
+
+Step by step, if you prefer to see each part:
+
 1. `git clone` the repo (above) and `cd` into it.
 2. `python3.11 -m venv .venv && source .venv/bin/activate`
+   *(Python 3.11 or 3.12 — 3.13 has no wheel for `numpy<2`.)*
 3. `pip install -r requirements.txt`  *(installs PyTorch etc. — a few minutes)*
-4. `pytest -q` — should print **71 passed**. If it does, your setup is good.
+4. `pytest -q` — should print **102 passed**. If it does, your setup is good.
 5. `python run.py` — first run downloads FinBERT (~440 MB) once, then serves
    `http://localhost:5001`. Wait ~1–2 minutes for the first data to appear.
 6. Open the dashboard and click a stock — you should see the Chart, then the
@@ -59,7 +67,14 @@ python run.py                      # → http://localhost:5001
 - Port 5001 (5000 is taken by macOS AirPlay). Override with `DASHBOARD_PORT`.
 - `python run.py --once` runs a single pipeline cycle and exits (handy for CI).
 - `python run.py --no-dashboard` runs the pipeline without the web server.
-- Optional `.env`: `GROQ_API_KEY=…` enables AI narrative, filing summaries, chatbot.
+- `bash scripts/keep_running.sh` supervises the app and restarts it if it exits
+  (logs to `data/app.log`); `scripts/install_autostart.sh` registers that with
+  launchd so it comes back at login (macOS).
+- Optional `.env` keys:
+  - `GROQ_API_KEY` — AI narrative, filing summaries, chatbot.
+  - `FINNHUB_API_KEY` — **analyst consensus**, the 25% component of every rating.
+    Without it that component falls back to scraping Finviz, which usually
+    bot-blocks, and ratings quietly become a three-signal blend. Free, no card.
 
 **Env vars worth knowing** (all have safe defaults, see `config/settings.py`):
 `PIPELINE_INTERVAL_SECONDS`, `TICKER_WINDOW_HOURS` (168 = 1 week),
@@ -150,7 +165,7 @@ On Vercel the static shim rewrites the read-only endpoints to pre-exported JSON;
 ## 6. Tests
 
 ```bash
-pytest -q          # 71 tests, ~0.6s, all green as of 2026-07-24
+pytest -q          # 102 tests, ~2s, all green as of 2026-09-20
 ```
 Coverage: sentiment scoring, ticker extraction, aggregation, collectors (mocked
 network). Network-dependent modules (EDGAR, yfinance, Finviz) are exercised via
@@ -181,8 +196,16 @@ After `python run.py`, confirm each of these in the browser:
    Keep the "educational only" framing; don't let it drift into advice.
 2. **Finviz / EDGAR / yfinance are scraped or unofficial.** They can rate-limit or
    change HTML. All three fail *gracefully* (cached, best-effort, the signal just
-   drops out) — but expect occasional gaps. Finviz has a per-cycle failure
-   circuit-breaker (`_fetch_recom`).
+   drops out) — but expect occasional gaps.
+   **Learn from this one:** graceful degradation hid a real outage. Analyst
+   consensus came from scraping Finviz, which bot-blocks, so it was populated in
+   only **94 of 4,661 logged signals (2.0%)** — 98% of ratings were silently a
+   *three*-signal blend. Fixed 2026-09-20 by reading Finnhub's free API
+   (99.2% populated), Finviz kept as fallback. When you add a signal, also log
+   how often it is actually present.
+2b. **Accuracy figures predate that fix.** Everything in
+   `docs/PREDICTION_TRACK_RECORD.md` was measured on the three-signal model.
+   Re-measuring needs ~7 days of graded predictions after 2026-09-20.
 3. **StockTwits is ~2/3 of raw news volume** and is intentionally down-weighted
    (0.3–0.4×). If social noise dominates a ticker, that's why.
 4. **Reports signal is weak by design** — FinBERT reads filings as neutral, so
@@ -197,14 +220,19 @@ After `python run.py`, confirm each of these in the browser:
 
 ## 8. Suggested next steps (roadmap)
 
-- **Automate the public refresh:** a scheduled GitHub Action can run the pipeline
-  (GitHub runners have 16 GB RAM → PyTorch fits) and redeploy the snapshot hourly.
+- **Re-measure accuracy on the fixed four-signal model** and update the track
+  record — this is the single most valuable next task.
+- **Automate the public refresh in the cloud:** today a local launchd job
+  (`scripts/refresh_and_deploy.sh`, every 2h) regenerates and pushes the snapshot,
+  so it only runs when this Mac is awake. A scheduled GitHub Action would remove
+  that dependency (runners have 16 GB RAM → PyTorch fits).
 - **Backtest the accuracy self-score** over a longer window; surface a per-signal
   precision breakdown (Buy vs Sell hit-rate).
 - **Tune the blend weights** against the graded `SignalHistory` outcomes instead
   of the current hand-set 30/30/25/15.
 - **Swap SQLite → Postgres** if multiple workers/write-concurrency are needed.
-- **Add real analyst price-target history** and earnings dates as extra signals.
+- **Add real analyst price-target history** and earnings dates as extra signals
+  (Finnhub's free tier already exposes price targets and earnings calendars).
 - **Harden scrapers** with retries/backoff and a shared fetch layer.
 
 ---

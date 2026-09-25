@@ -1104,6 +1104,100 @@ def verify(ticker: str, our_signal: str = "") -> dict | None:
     return data
 
 
+# ----------------------------------------------------------------------
+# Analyst consensus via Finnhub (the reliable path)
+#
+# Finviz bot-blocks server-side requests, so verify() above fails for most
+# tickers in a pipeline cycle and the analyst component — 25% of the blended
+# rating — was populated in only 2% of logged signals. Finnhub's free tier
+# (60 calls/min, no card) serves the same data as an API.
+#
+# Finnhub returns analyst *counts* per bucket; we collapse them onto the same
+# 1..5 scale Finviz publishes (1=Strong Buy … 5=Strong Sell) so every consumer
+# downstream — _analyst_signal(), TickerSentiment.analyst_recom, the dashboard
+# breakdown, _recom_to_signal() above — keeps working unchanged.
+# ----------------------------------------------------------------------
+from config.settings import FINNHUB_API_KEY as _FINNHUB_KEY
+
+_FINNHUB_URL = "https://finnhub.io/api/v1/stock/recommendation"
+
+# The shipped .env.example ships a placeholder rather than a blank, so treat
+# anything that still looks like the template as "no key".
+_KEY_PLACEHOLDERS = {"", "PASTE_YOUR_FINNHUB_KEY_HERE", "your_finnhub_key_here"}
+
+# 1..5 weight for each bucket, matching the Finviz Recom convention.
+_RECOM_WEIGHTS = (("strongBuy", 1), ("buy", 2), ("hold", 3),
+                  ("sell", 4), ("strongSell", 5))
+
+
+def _counts_to_recom(row: dict) -> float | None:
+    """Analyst bucket counts → a 1..5 consensus, or None if nobody covers it."""
+    total = weighted = 0
+    for field, weight in _RECOM_WEIGHTS:
+        n = row.get(field) or 0
+        if not isinstance(n, (int, float)):
+            return None
+        total += n
+        weighted += weight * n
+    if total <= 0:
+        return None
+    return round(weighted / total, 2)
+
+
+class FinnhubError(RuntimeError):
+    """Finnhub was unreachable, refused us, or sent something unparseable."""
+
+
+def finnhub_recom_strict(ticker: str) -> float | None:
+    """
+    Analyst consensus on the 1..5 scale, or None if no analyst covers it.
+
+    Raises FinnhubError when the *source* failed rather than the ticker being
+    uncovered. Callers with a circuit breaker need that distinction: an empty
+    result for an obscure ticker is a normal answer and must not count toward
+    tripping the breaker, or a run of uncovered tickers would disable the
+    source exactly the way the Finviz scrape already fails.
+    """
+    key = (_FINNHUB_KEY or "").strip()
+    if key in _KEY_PLACEHOLDERS:
+        raise FinnhubError("FINNHUB_API_KEY is not set")
+
+    sym = ticker.upper().lstrip("$")
+    try:
+        resp = requests.get(_FINNHUB_URL, params={"symbol": sym, "token": key},
+                            timeout=15)
+    except Exception as exc:
+        raise FinnhubError(f"request failed: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise FinnhubError(f"HTTP {resp.status_code}")
+
+    try:
+        rows = resp.json()
+    except Exception as exc:
+        raise FinnhubError(f"bad JSON: {exc}") from exc
+
+    if not isinstance(rows, list):
+        raise FinnhubError(f"expected a list, got {type(rows).__name__}")
+    if not rows:
+        return None          # no coverage — a real answer, not a failure
+
+    # Finnhub returns newest first, but sort on `period` rather than trust it.
+    dated = [r for r in rows if isinstance(r, dict)]
+    if not dated:
+        raise FinnhubError("no usable rows")
+    latest = max(dated, key=lambda r: r.get("period") or "")
+    return _counts_to_recom(latest)
+
+
+def finnhub_recom(ticker: str) -> float | None:
+    """Non-raising form of finnhub_recom_strict(): None on any failure."""
+    try:
+        return finnhub_recom_strict(ticker)
+    except FinnhubError:
+        return None
+
+
 # ======================================================================
 # from collectors/price_history.py
 # ======================================================================

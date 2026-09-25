@@ -15,6 +15,22 @@ pinned: false
 
 A real-time financial news sentiment analysis system that ingests headlines from 15 free sources, scores them using FinBERT and VADER, ranks them by trust/time-decay weighted scores, and displays results on a live Bloomberg-style dashboard with a built-in AI tutor chatbot. The pipeline auto-fetches around the clock — every 60s in pre-market/after-hours, when overnight news matters most — so the board is always current before the market opens.
 
+## New here? Read this first
+
+If you are picking this project up to work on it:
+
+1. Run it — `bash start.sh` (macOS/Linux) or `start.bat` (Windows). One command,
+   first run installs everything. Details below.
+2. Read **[`docs/HANDOFF.md`](docs/HANDOFF.md)** — the developer guide: first 30
+   minutes, how the pieces fit, a file-by-file map, the API reference, the test
+   suite, the honest list of known gaps, and a suggested roadmap.
+3. Skim **[`docs/PREDICTION_TRACK_RECORD.md`](docs/PREDICTION_TRACK_RECORD.md)** —
+   how well the ratings actually perform, measured, not claimed.
+4. The single most useful next task is written down in the roadmap section of the
+   handoff guide: re-measure accuracy now that the analyst signal is fixed.
+
+Everything is free to run. The only keys are optional and both have free tiers.
+
 ## How to run it on your own computer
 
 Tested from a fresh `git clone` on a separate folder: install finished and all **88 tests passed**.
