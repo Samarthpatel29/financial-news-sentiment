@@ -147,6 +147,7 @@ data/              → runtime database (created on first run)
 public/            → generated static snapshot for the web deploy
 project-admin/     → school/admin files (activity logs, charts) — not part of the code
 SOURCE_CODE_BUNDLE.py → all Python source in one file, for quick review
+                     (regenerate with: python scripts/build_bundle.py)
 ```
 
 ## Architecture
