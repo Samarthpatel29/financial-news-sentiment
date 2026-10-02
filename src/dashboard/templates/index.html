@@ -493,6 +493,7 @@ body {
 .sig-badge.s-bull { background: rgba(0,212,126,.15); color: var(--pos2); border: 1px solid rgba(0,212,126,.35); }
 .sig-badge.s-bear { background: rgba(255,69,96,.15); color: var(--neg2); border: 1px solid rgba(255,69,96,.35); }
 .sig-badge.s-neu  { background: rgba(245,166,35,.12); color: var(--neu2); border: 1px solid rgba(245,166,35,.3); }
+.sig-badge.s-wait { background: rgba(140,150,170,.12); color: var(--muted); border: 1px dashed rgba(140,150,170,.4); }
 .sig-conf { margin-left: auto; text-align: right; }
 .sig-conf .n { font-family: var(--mono); font-weight: 700; font-size: 0.95rem; }
 .sig-conf .l { font-size: 0.55rem; color: var(--muted); }
@@ -2195,8 +2196,10 @@ let _sigSector = 'all';
 let _sigEvent  = 'all';
 let _sigWatchOnly = false;
 
-const sigCls  = s => s === 'BUY' ? 's-bull' : s === 'SELL' ? 's-bear' : 's-neu';
-const sigSign = s => s === 'BUY' ? '▲ BUY' : s === 'SELL' ? '▼ SELL' : '— HOLD';
+const sigCls  = s => s === 'BUY' ? 's-bull' : s === 'SELL' ? 's-bear' : s === 'PENDING' ? 's-wait' : 's-neu';
+// PENDING = the first full data cycle has not reached this stock yet.
+const sigSign = s => s === 'BUY' ? '▲ BUY' : s === 'SELL' ? '▼ SELL'
+                   : s === 'PENDING' ? '⋯ PENDING' : '— HOLD';
 
 /* ── Watchlist (saved in the browser, no account) ───────────────────────────── */
 const WL_KEY = 'siq_watchlist';
@@ -2418,6 +2421,12 @@ async function loadSigVerify() {
 /* Plain-English "why" — composed from the four real components (0 API calls) */
 function sigReasoning(r) {
   const parts = [];
+  if (r.signal === 'PENDING') {
+    return `${r.ticker} has not been rated yet. The slow cycle that fetches price history, `
+         + `analyst consensus and SEC filings runs every 6 hours and starts a couple of minutes `
+         + `after launch — on a fresh install the first pass takes a few minutes. A rating appears `
+         + `as soon as it finishes; it is deliberately not shown as HOLD in the meantime.`;
+  }
   const act = r.signal === 'BUY' ? 'a BUY' : r.signal === 'SELL' ? 'a SELL' : 'a HOLD';
   parts.push(`The model rates ${r.ticker} ${act} with ${r.confidence}% confidence (overall score ${sgn(r.continuation)}). This blends four signals — news, price momentum, analyst view, and SEC filings.`);
 

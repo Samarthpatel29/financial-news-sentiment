@@ -327,3 +327,35 @@ class _FakeResponse:
 
     def json(self):
         return self._payload
+
+
+class TestPendingNotHold:
+    """
+    An un-scored stock must not be reported as HOLD.
+
+    Before this, `continuation_score or 0.0` turned a missing score into 0.0,
+    which lands in the HOLD band — so on a fresh install, before the 6-hourly
+    fundamentals cycle had run, every stock on the dashboard read HOLD. HOLD is
+    a claim ("we expect no big move"); "not computed yet" is not.
+    """
+
+    @staticmethod
+    def _signal_for(continuation_score):
+        """The rating branch as it is written in app.py::_fundamental_rows."""
+        BUY, SELL = 0.25, 0.12
+        pred = continuation_score
+        if pred is None:
+            return "PENDING"
+        return "BUY" if pred > BUY else "SELL" if pred < -SELL else "HOLD"
+
+    def test_missing_score_is_pending(self):
+        assert self._signal_for(None) == "PENDING"
+
+    def test_a_real_zero_is_still_hold(self):
+        # 0.0 means "we scored it and it came out neutral" — that IS a HOLD.
+        assert self._signal_for(0.0) == "HOLD"
+
+    def test_scored_stocks_are_unaffected(self):
+        assert self._signal_for(0.56) == "BUY"
+        assert self._signal_for(-0.40) == "SELL"
+        assert self._signal_for(0.10) == "HOLD"

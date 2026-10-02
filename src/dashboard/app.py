@@ -286,9 +286,16 @@ def _fundamental_rows(db: Session) -> list[dict]:
         agreement = abs(t.continuation_score or 0.0) * 30
         confidence = min(95, round(35 + evidence * 0.6 + agreement))
 
-        pred = t.continuation_score or 0.0
-        signal = ("BUY" if pred > SIGNAL_BUY_THRESHOLD
-                  else "SELL" if pred < -SIGNAL_SELL_THRESHOLD else "HOLD")
+        # A stock with no blended score yet has not been *rated* HOLD — the
+        # fundamentals cycle (prices, analysts, filings) simply has not reached
+        # it. Saying HOLD there is a claim we have not earned, and on a fresh
+        # install it made every stock look like a HOLD. Report PENDING instead.
+        pred = t.continuation_score
+        if pred is None:
+            signal, pred = "PENDING", 0.0
+        else:
+            signal = ("BUY" if pred > SIGNAL_BUY_THRESHOLD
+                      else "SELL" if pred < -SIGNAL_SELL_THRESHOLD else "HOLD")
 
         # Event types driving this signal (from the filing kinds present)
         kinds = {f.section_kind for f in fs}
