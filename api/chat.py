@@ -17,7 +17,7 @@ import urllib.request
 from collections import deque
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "llama-3.3-70b-versatile"
+MODEL = os.getenv("CHAT_LLM_MODEL", "openai/gpt-oss-120b")  # Groq retires models; override here
 
 # ── Abuse limits ──────────────────────────────────────────────────────────────
 # This endpoint relays to a free-tier Groq key with no auth in front of it, so

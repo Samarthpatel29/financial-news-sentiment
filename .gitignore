@@ -35,3 +35,13 @@ data/narrative.txt
 *.swp
 .claude/
 .vercel
+
+# School/admin paperwork and personal documents — not part of the codebase.
+# (They live locally and in the submission package, not in the public repo.)
+project-admin/
+*.docx
+*.xlsx
+.claude/
+
+# Local logs
+push_log.txt

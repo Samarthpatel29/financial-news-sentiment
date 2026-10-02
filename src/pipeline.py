@@ -334,7 +334,8 @@ def _groq_summary(ticker: str, form_type: str, text: str) -> tuple[str, str]:
             messages=[{"role": "system", "content": _SUMMARY_SYSTEM},
                       {"role": "user", "content": prompt}],
             temperature=0.4,
-            max_tokens=220,
+            # generous: these models spend tokens on hidden reasoning first
+            max_tokens=800,
         )
         out = resp.choices[0].message.content.strip()
     except Exception as exc:
@@ -899,7 +900,7 @@ def _title_key(title: str) -> str:
 
 def _make_crew():
     """
-    Build a CrewAI crew that uses Groq's free tier (llama-3.1-8b-instant).
+    Build a CrewAI crew that uses Groq's free tier (see CREW_LLM_MODEL).
     Returns None gracefully if crewai or groq are not installed / key missing.
     """
     if not GROQ_API_KEY or GROQ_API_KEY == "PASTE_YOUR_GROQ_KEY_HERE":
@@ -912,7 +913,7 @@ def _make_crew():
         return None
 
     llm = LLM(
-        model=CREW_LLM_MODEL,       # "groq/llama-3.1-8b-instant"
+        model=CREW_LLM_MODEL,       # e.g. "groq/openai/gpt-oss-20b"
         api_key=GROQ_API_KEY,
     )
 

@@ -1,13 +1,3 @@
----
-title: SentimentIQ
-emoji: 📈
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # Financial News Sentiment Pipeline
 
 > IST 495 · Agentic AI Internship · Penn State · Summer 2026  
@@ -129,25 +119,24 @@ python run.py --no-dashboard  # pipeline only, keeps running
 ## Project structure
 
 ```
-run.py             → single entry point (pipeline + dashboard)
-start.sh / start.bat → one-command setup + launch (macOS/Linux · Windows)
-requirements.txt   → dependencies
+run.py               → single entry point (pipeline + dashboard)
+start.sh / start.bat → one command: sets up on first run, launches after that
+requirements.txt     → dependencies
+config/              → settings, ticker universe, sector map
 src/
-  collectors.py    → all data collectors (RSS news, StockTwits, SEC/EDGAR, Finviz, prices)
-  sentiment.py     → sentiment scoring (FinBERT + VADER + optional LLM judge + ranking)
-  pipeline.py      → orchestration: crew, per-ticker aggregation, fundamentals/predictions
-  storage.py       → database models (SQLAlchemy)
-  utils.py         → market-hours helper
-  dashboard/       → Flask app (app.py) + the HTML dashboard (templates/index.html)
-config/            → settings, ticker universe, sector map
-api/               → serverless functions for the Vercel deploy (chatbot, verify)
-tests/             → automated test suite   ·   scripts/ → maintenance scripts
-docs/              → all documentation (reports, accuracy, differentiation, handoff)
-data/              → runtime database (created on first run)
-public/            → generated static snapshot for the web deploy
-project-admin/     → school/admin files (activity logs, charts) — not part of the code
-SOURCE_CODE_BUNDLE.py → all Python source in one file, for quick review
-                     (regenerate with: python scripts/build_bundle.py)
+  collectors.py      → all data collectors (news, StockTwits, SEC/EDGAR, Finnhub, Finviz, prices)
+  sentiment.py       → sentiment scoring (FinBERT + VADER + optional LLM judge + ranking)
+  pipeline.py        → orchestration: cycles, per-ticker aggregation, the prediction engine
+  storage.py         → database models (SQLAlchemy)
+  utils.py           → market-hours helper
+  dashboard/         → Flask app (app.py) + the HTML dashboard (templates/index.html)
+api/                 → serverless functions for the Vercel deploy (chatbot, verify)
+tests/               → 102 automated tests
+scripts/             → maintenance: refresh+deploy, keep-alive, accuracy measurement, bundle build
+docs/                → documentation (start with docs/HANDOFF.md)
+public/              → generated static snapshot for the public site
+SOURCE_CODE_BUNDLE.py → all Python source in one file for quick review
+                       (regenerate: python scripts/build_bundle.py)
 ```
 
 ## Architecture

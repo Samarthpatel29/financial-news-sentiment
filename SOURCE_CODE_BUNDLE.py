@@ -474,19 +474,27 @@ FINNHUB_API_KEY  = os.getenv("FINNHUB_API_KEY", "")
 NEWSAPI_KEY      = os.getenv("NEWSAPI_KEY", "")
 
 # ── Groq / CrewAI ─────────────────────────────────────────────────────────────
-# llama-3.1-8b-instant is fast and free on Groq's free tier
-CREW_LLM_MODEL   = "groq/llama-3.1-8b-instant"
+# Groq retires models with little notice (llama-3.1-8b-instant and
+# llama-3.3-70b-versatile both 404'd on 2026-10-01), which silently disables the
+# narrative, filing summaries and chatbot. So every model name is overridable
+# from .env — when one disappears, check https://console.groq.com/docs/models
+# and set the variable instead of editing code.
+#
+# gpt-oss-20b is the fast one, used for the per-cycle crew work and filing
+# summaries. Note these models emit reasoning tokens that count against
+# max_tokens, so keep those limits generous.
+CREW_LLM_MODEL   = os.getenv("CREW_LLM_MODEL", "groq/openai/gpt-oss-20b")
 
-# The chatbot is held to a different standard than the crew: it answers open-ended
-# questions about a specific stock, so it needs real reasoning rather than raw
-# speed. 70b-versatile is also free on Groq, just with a smaller rate limit.
-CHAT_LLM_MODEL   = "groq/llama-3.3-70b-versatile"
+# The chatbot is held to a different standard than the crew: it answers
+# open-ended questions about a specific stock, so it needs real reasoning rather
+# than raw speed. gpt-oss-120b is also free on Groq, with a smaller rate limit.
+CHAT_LLM_MODEL   = os.getenv("CHAT_LLM_MODEL", "groq/openai/gpt-oss-120b")
 
 # Per-headline news sentiment. FinBERT (local, free, offline) is the base; when a
 # free Groq key is present we prefer this LLM for the nuance FinBERT misses
 # ("cuts costs" bullish vs "cuts guidance" bearish). Batched to stay within the
 # free tier. Set USE_LLM_SENTIMENT=0 to force the fully-offline FinBERT/VADER path.
-NEWS_LLM_MODEL     = "groq/llama-3.3-70b-versatile"
+NEWS_LLM_MODEL     = os.getenv("NEWS_LLM_MODEL", "groq/openai/gpt-oss-120b")
 USE_LLM_SENTIMENT  = os.getenv("USE_LLM_SENTIMENT", "1") == "1"
 
 # ── Storage ────────────────────────────────────────────────────────────────────
@@ -2601,7 +2609,7 @@ classifies single sentences and misses context that flips a headline's meaning:
 "Acme cuts costs" (bullish) vs "Acme cuts guidance" (bearish), "beats but warns",
 "misses on revenue, raises buyback", etc. A general LLM reads that nuance.
 
-This module asks Groq's free tier (llama-3.3-70b-versatile — no credit card,
+This module asks Groq's free tier (see NEWS_LLM_MODEL — no credit card,
 14,400 req/day, fast enough for the real-time board) to score a BATCH of
 headlines in one call. It returns a continuous score in [-1, 1] per headline,
 in the SAME convention as FinBERT's `score` (P(pos) - P(neg)), so callers can
@@ -3232,7 +3240,8 @@ def _groq_summary(ticker: str, form_type: str, text: str) -> tuple[str, str]:
             messages=[{"role": "system", "content": _SUMMARY_SYSTEM},
                       {"role": "user", "content": prompt}],
             temperature=0.4,
-            max_tokens=220,
+            # generous: these models spend tokens on hidden reasoning first
+            max_tokens=800,
         )
         out = resp.choices[0].message.content.strip()
     except Exception as exc:
@@ -3797,7 +3806,7 @@ def _title_key(title: str) -> str:
 
 def _make_crew():
     """
-    Build a CrewAI crew that uses Groq's free tier (llama-3.1-8b-instant).
+    Build a CrewAI crew that uses Groq's free tier (see CREW_LLM_MODEL).
     Returns None gracefully if crewai or groq are not installed / key missing.
     """
     if not GROQ_API_KEY or GROQ_API_KEY == "PASTE_YOUR_GROQ_KEY_HERE":
@@ -3810,7 +3819,7 @@ def _make_crew():
         return None
 
     llm = LLM(
-        model=CREW_LLM_MODEL,       # "groq/llama-3.1-8b-instant"
+        model=CREW_LLM_MODEL,       # e.g. "groq/openai/gpt-oss-20b"
         api_key=GROQ_API_KEY,
     )
 
@@ -5062,7 +5071,7 @@ if __name__ == "__main__":
 """
 Beginner-friendly chatbot for the SentimentIQ dashboard.
 
-Uses Groq's free tier (llama-3.1-8b-instant) — the same free API key that
+Uses Groq's free tier (see CHAT_LLM_MODEL) — the same free API key that
 powers the AI Narrative. No extra cost, no extra key.
 
 The bot is grounded with a live snapshot of the dashboard (market mood, top
@@ -5077,7 +5086,7 @@ from config.settings import GROQ_API_KEY, CHAT_LLM_MODEL
 log = logging.getLogger(__name__)
 
 # Strip the "groq/" prefix CrewAI uses — the raw SDK wants the bare model id
-_MODEL = CHAT_LLM_MODEL.split("/", 1)[-1]   # "llama-3.3-70b-versatile"
+_MODEL = CHAT_LLM_MODEL.split("/", 1)[-1]   # strip the "groq/" litellm prefix
 
 _SYSTEM_PROMPT = """You are Sentiment Buddy, a friendly assistant built into the \
 SentimentIQ dashboard — a real-time financial-news sentiment tool. You help \
@@ -5229,7 +5238,7 @@ import urllib.request
 from collections import deque
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "llama-3.3-70b-versatile"
+MODEL = os.getenv("CHAT_LLM_MODEL", "openai/gpt-oss-120b")  # Groq retires models; override here
 
 # ── Abuse limits ──────────────────────────────────────────────────────────────
 # This endpoint relays to a free-tier Groq key with no auth in front of it, so

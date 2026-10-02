@@ -728,7 +728,7 @@ if __name__ == "__main__":
 """
 Beginner-friendly chatbot for the SentimentIQ dashboard.
 
-Uses Groq's free tier (llama-3.1-8b-instant) — the same free API key that
+Uses Groq's free tier (see CHAT_LLM_MODEL) — the same free API key that
 powers the AI Narrative. No extra cost, no extra key.
 
 The bot is grounded with a live snapshot of the dashboard (market mood, top
@@ -743,7 +743,7 @@ from config.settings import GROQ_API_KEY, CHAT_LLM_MODEL
 log = logging.getLogger(__name__)
 
 # Strip the "groq/" prefix CrewAI uses — the raw SDK wants the bare model id
-_MODEL = CHAT_LLM_MODEL.split("/", 1)[-1]   # "llama-3.3-70b-versatile"
+_MODEL = CHAT_LLM_MODEL.split("/", 1)[-1]   # strip the "groq/" litellm prefix
 
 _SYSTEM_PROMPT = """You are Sentiment Buddy, a friendly assistant built into the \
 SentimentIQ dashboard — a real-time financial-news sentiment tool. You help \

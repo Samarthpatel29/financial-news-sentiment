@@ -95,19 +95,27 @@ FINNHUB_API_KEY  = os.getenv("FINNHUB_API_KEY", "")
 NEWSAPI_KEY      = os.getenv("NEWSAPI_KEY", "")
 
 # ── Groq / CrewAI ─────────────────────────────────────────────────────────────
-# llama-3.1-8b-instant is fast and free on Groq's free tier
-CREW_LLM_MODEL   = "groq/llama-3.1-8b-instant"
+# Groq retires models with little notice (llama-3.1-8b-instant and
+# llama-3.3-70b-versatile both 404'd on 2026-10-01), which silently disables the
+# narrative, filing summaries and chatbot. So every model name is overridable
+# from .env — when one disappears, check https://console.groq.com/docs/models
+# and set the variable instead of editing code.
+#
+# gpt-oss-20b is the fast one, used for the per-cycle crew work and filing
+# summaries. Note these models emit reasoning tokens that count against
+# max_tokens, so keep those limits generous.
+CREW_LLM_MODEL   = os.getenv("CREW_LLM_MODEL", "groq/openai/gpt-oss-20b")
 
-# The chatbot is held to a different standard than the crew: it answers open-ended
-# questions about a specific stock, so it needs real reasoning rather than raw
-# speed. 70b-versatile is also free on Groq, just with a smaller rate limit.
-CHAT_LLM_MODEL   = "groq/llama-3.3-70b-versatile"
+# The chatbot is held to a different standard than the crew: it answers
+# open-ended questions about a specific stock, so it needs real reasoning rather
+# than raw speed. gpt-oss-120b is also free on Groq, with a smaller rate limit.
+CHAT_LLM_MODEL   = os.getenv("CHAT_LLM_MODEL", "groq/openai/gpt-oss-120b")
 
 # Per-headline news sentiment. FinBERT (local, free, offline) is the base; when a
 # free Groq key is present we prefer this LLM for the nuance FinBERT misses
 # ("cuts costs" bullish vs "cuts guidance" bearish). Batched to stay within the
 # free tier. Set USE_LLM_SENTIMENT=0 to force the fully-offline FinBERT/VADER path.
-NEWS_LLM_MODEL     = "groq/llama-3.3-70b-versatile"
+NEWS_LLM_MODEL     = os.getenv("NEWS_LLM_MODEL", "groq/openai/gpt-oss-120b")
 USE_LLM_SENTIMENT  = os.getenv("USE_LLM_SENTIMENT", "1") == "1"
 
 # ── Storage ────────────────────────────────────────────────────────────────────

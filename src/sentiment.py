@@ -305,7 +305,7 @@ classifies single sentences and misses context that flips a headline's meaning:
 "Acme cuts costs" (bullish) vs "Acme cuts guidance" (bearish), "beats but warns",
 "misses on revenue, raises buyback", etc. A general LLM reads that nuance.
 
-This module asks Groq's free tier (llama-3.3-70b-versatile — no credit card,
+This module asks Groq's free tier (see NEWS_LLM_MODEL — no credit card,
 14,400 req/day, fast enough for the real-time board) to score a BATCH of
 headlines in one call. It returns a continuous score in [-1, 1] per headline,
 in the SAME convention as FinBERT's `score` (P(pos) - P(neg)), so callers can
